@@ -1,0 +1,8 @@
+{
+  "counter_mode": "HCC",
+  "poi_mode": null,
+  "silent_interval_ms": null,
+  "poi_definition": "not used by periodic counter mode",
+  "total_poi_packets": 0,
+  "packets": []
+}

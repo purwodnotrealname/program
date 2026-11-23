@@ -1,0 +1,90 @@
+{
+  "interface": "\\Device\\NPF_{087FD757-EA4B-4CC8-B4E2-481BB410C89E}",
+  "counter_mode": "periodic",
+  "counter_interval_seconds": 1.0,
+  "initialization_time": "2026-11-22T20:17:03.383",
+  "total_packets": null,
+  "total_counter_samples": 10,
+  "samples": [
+    {
+      "sample_no": 1,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:03.385",
+      "counter": 0,
+      "bit_value": 0
+    },
+    {
+      "sample_no": 2,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:04.399",
+      "counter": 1,
+      "bit_value": 1
+    },
+    {
+      "sample_no": 3,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:05.409",
+      "counter": 2,
+      "bit_value": 2
+    },
+    {
+      "sample_no": 4,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:06.420",
+      "counter": 3,
+      "bit_value": 3
+    },
+    {
+      "sample_no": 5,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:07.436",
+      "counter": 4,
+      "bit_value": 4
+    },
+    {
+      "sample_no": 6,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:08.450",
+      "counter": 5,
+      "bit_value": 5
+    },
+    {
+      "sample_no": 7,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:09.463",
+      "counter": 6,
+      "bit_value": 6
+    },
+    {
+      "sample_no": 8,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:10.479",
+      "counter": 7,
+      "bit_value": 7
+    },
+    {
+      "sample_no": 9,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:11.491",
+      "counter": 8,
+      "bit_value": 8
+    },
+    {
+      "sample_no": 10,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-22T20:17:12.504",
+      "counter": 9,
+      "bit_value": 9
+    }
+  ]
+}
