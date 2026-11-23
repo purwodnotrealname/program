@@ -2,15 +2,15 @@
   "interface": "\\Device\\NPF_{087FD757-EA4B-4CC8-B4E2-481BB410C89E}",
   "counter_mode": "periodic",
   "counter_interval_seconds": 1.0,
-  "initialization_time": "2026-11-22T20:17:03.383",
+  "initialization_time": "2026-11-23T16:53:47.880",
   "total_packets": null,
-  "total_counter_samples": 10,
+  "total_counter_samples": 16,
   "samples": [
     {
       "sample_no": 1,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:03.385",
+      "timestamp": "2026-11-23T16:53:47.882",
       "counter": 0,
       "bit_value": 0
     },
@@ -18,7 +18,7 @@
       "sample_no": 2,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:04.399",
+      "timestamp": "2026-11-23T16:53:48.900",
       "counter": 1,
       "bit_value": 1
     },
@@ -26,7 +26,7 @@
       "sample_no": 3,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:05.409",
+      "timestamp": "2026-11-23T16:53:49.916",
       "counter": 2,
       "bit_value": 2
     },
@@ -34,7 +34,7 @@
       "sample_no": 4,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:06.420",
+      "timestamp": "2026-11-23T16:53:50.927",
       "counter": 3,
       "bit_value": 3
     },
@@ -42,7 +42,7 @@
       "sample_no": 5,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:07.436",
+      "timestamp": "2026-11-23T16:53:51.941",
       "counter": 4,
       "bit_value": 4
     },
@@ -50,7 +50,7 @@
       "sample_no": 6,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:08.450",
+      "timestamp": "2026-11-23T16:53:52.945",
       "counter": 5,
       "bit_value": 5
     },
@@ -58,7 +58,7 @@
       "sample_no": 7,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:09.463",
+      "timestamp": "2026-11-23T16:53:53.958",
       "counter": 6,
       "bit_value": 6
     },
@@ -66,7 +66,7 @@
       "sample_no": 8,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:10.479",
+      "timestamp": "2026-11-23T16:53:54.972",
       "counter": 7,
       "bit_value": 7
     },
@@ -74,7 +74,7 @@
       "sample_no": 9,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:11.491",
+      "timestamp": "2026-11-23T16:53:55.977",
       "counter": 8,
       "bit_value": 8
     },
@@ -82,9 +82,57 @@
       "sample_no": 10,
       "protocol": "PERIODIC",
       "counter_mode": "periodic",
-      "timestamp": "2026-11-22T20:17:12.504",
+      "timestamp": "2026-11-23T16:53:56.992",
       "counter": 9,
       "bit_value": 9
+    },
+    {
+      "sample_no": 11,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-23T16:53:58.002",
+      "counter": 10,
+      "bit_value": 10
+    },
+    {
+      "sample_no": 12,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-23T16:53:59.013",
+      "counter": 11,
+      "bit_value": 11
+    },
+    {
+      "sample_no": 13,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-23T16:54:00.030",
+      "counter": 12,
+      "bit_value": 12
+    },
+    {
+      "sample_no": 14,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-23T16:54:01.043",
+      "counter": 13,
+      "bit_value": 13
+    },
+    {
+      "sample_no": 15,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-23T16:54:02.053",
+      "counter": 14,
+      "bit_value": 14
+    },
+    {
+      "sample_no": 16,
+      "protocol": "PERIODIC",
+      "counter_mode": "periodic",
+      "timestamp": "2026-11-23T16:54:03.068",
+      "counter": 15,
+      "bit_value": 15
     }
   ]
 }

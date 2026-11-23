@@ -57,6 +57,8 @@ class ReceiverHistoryExtractor:
         self.session_id = uuid.uuid4().hex
         self.sample_count = 0
         self.captured_packet_count = 0
+        self.recognized_pointer_count = 0
+        self.recognition_rejections = {}
         self._counter_state = PeriodicCounterState()
         self._next_periodic_tick = None
         self._start_pointer_seen = False
@@ -167,28 +169,44 @@ class ReceiverHistoryExtractor:
             flush=True,
         )
 
+    def _note_recognition_rejection(self, reason):
+        """Count rejected capture candidates and print each reason once."""
+        count = self.recognition_rejections.get(reason, 0) + 1
+        self.recognition_rejections[reason] = count
+        if count == 1:
+            print(f"Captured packet ignored: {reason}.", flush=True)
+
     def _process_packet(self, packet, timestamp, arrival_perf_counter):
         """Start from a control pointer and process later data pointers."""
         self._emit_due_periodic_values(arrival_perf_counter)
-        pointer_record = self.pointer_recognizer.recognize(packet)
-        if pointer_record is not None:
-            is_start_pointer = (
-                pointer_record.get("signal_type") == "start"
-                and pointer_record.get("counter_mode") == PERIODIC_MODE
-            )
-            if is_start_pointer:
-                if not self._start_pointer_seen:
-                    pointer_record["timestamp"] = timestamp
-                    self._record_start_pointer(
-                        pointer_record,
-                        timestamp,
-                        arrival_perf_counter,
-                    )
-                return
-            if not self._start_pointer_seen:
-                return
-            self._record_pointer(pointer_record, timestamp)
+        pointer_record, rejection = self.pointer_recognizer.inspect(packet)
+        if pointer_record is None:
+            self._note_recognition_rejection(rejection)
             return
+
+        self.recognized_pointer_count += 1
+        if pointer_record.get("counter_mode") != PERIODIC_MODE:
+            self._note_recognition_rejection(
+                "pointer counter_mode is "
+                f"{pointer_record.get('counter_mode')!r}; expected {PERIODIC_MODE!r}"
+            )
+            return
+
+        if pointer_record.get("signal_type") == "start":
+            if not self._start_pointer_seen:
+                pointer_record["timestamp"] = timestamp
+                self._record_start_pointer(
+                    pointer_record,
+                    timestamp,
+                    arrival_perf_counter,
+                )
+            return
+        if not self._start_pointer_seen:
+            self._note_recognition_rejection(
+                "valid data pointer arrived before the startup pointer"
+            )
+            return
+        self._record_pointer(pointer_record, timestamp)
 
     def _process_loop(self):
         """Proses frame antrean dan timer counter pada satu worker terurut."""
@@ -281,6 +299,14 @@ class ReceiverHistoryExtractor:
                 f"{self.sample_count} produced counter values.",
                 flush=True,
             )
+            print(
+                f"Pointer recognition: {self.recognized_pointer_count} valid "
+                f"pointer frame(s); {sum(self.recognition_rejections.values())} "
+                "rejected candidate(s).",
+                flush=True,
+            )
+            for reason, count in self.recognition_rejections.items():
+                print(f"  {count} frame(s): {reason}", flush=True)
             print(f"Latest buffer: {self.store.buffer_path}", flush=True)
             print(f"Append-only log: {self.store.log_path}", flush=True)
             print(f"Secret bits: {self.secret_bits_store.filepath}", flush=True)

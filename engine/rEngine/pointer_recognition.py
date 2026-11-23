@@ -25,25 +25,51 @@ class PointerRecognizer:
 
     def recognize(self, pkt):
         """Kembalikan metadata pointer valid, atau ``None`` untuk frame lain."""
+        record, _reason = self.inspect(pkt)
+        return record
+
+    def inspect(self, pkt):
+        """Return pointer metadata and a concise reason when a packet is rejected."""
         if not (
             pkt.haslayer(Ether)
             and pkt.haslayer(IP)
             and pkt.haslayer(UDP)
             and pkt.haslayer(DNS)
         ):
-            return None
-        if pkt[IP].src != self.sender_ip or pkt[IP].dst != MDNS_GROUP_IP:
-            return None
+            missing = [
+                layer.__name__
+                for layer in (Ether, IP, UDP, DNS)
+                if not pkt.haslayer(layer)
+            ]
+            return None, f"missing Scapy layer(s): {', '.join(missing)}"
+        if pkt[IP].src != self.sender_ip:
+            return None, (
+                f"source IPv4 is {pkt[IP].src}; configured sender is "
+                f"{self.sender_ip}"
+            )
+        if pkt[IP].dst != MDNS_GROUP_IP:
+            return None, f"destination IPv4 is {pkt[IP].dst}, not {MDNS_GROUP_IP}"
         if pkt[UDP].sport != MDNS_PORT or pkt[UDP].dport != MDNS_PORT:
-            return None
+            return None, (
+                f"UDP ports are {pkt[UDP].sport}->{pkt[UDP].dport}; "
+                f"expected {MDNS_PORT}->{MDNS_PORT}"
+            )
 
         dns = pkt[DNS]
-        if not dns.qr or not dns.aa or not dns.ancount:
-            return None
+        if not dns.qr:
+            return None, "DNS packet is a query (QR=0), expected a response"
+        if not dns.aa:
+            return None, "DNS response is not authoritative (AA=0)"
+        if not dns.ancount:
+            return None, "DNS response has no answer records"
 
         pointer_metadata = self._find_pointer_txt_record(dns)
         if pointer_metadata is None:
-            return None
+            return None, (
+                "DNS answers contain no TXT pointer record with service suffix "
+                f"{POINTER_SERVICE_SUFFIX!r} and signature "
+                f"{POINTER_TXT_SIGNATURE!r}"
+            )
 
         record = {
             "packet_type": "mDNS",
@@ -61,7 +87,7 @@ class PointerRecognizer:
             for key in ("counter_mode", "signal_type")
             if key in pointer_metadata
         })
-        return record
+        return record, None
 
     @classmethod
     def _find_pointer_txt_record(cls, dns):
