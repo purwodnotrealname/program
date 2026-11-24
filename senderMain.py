@@ -10,8 +10,8 @@ from pathlib import Path
 from engine.sEngine.history_extract import ICDExtractor
 from engine.sEngine.history_match import SequentialBitMatcher
 from engine.sEngine.pointer_signal import PointerSignalSender
-from engine.interface_utils import choose_network_interface
-from engine.periodic_counter import OUTPUT_BITS, PERIODIC_MODE
+from engine.interface_utils import choose_counter_mode, choose_network_interface
+from engine.periodic_counter import OUTPUT_BITS
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_FILE = str(BASE_DIR / "engineDump" / "history_results.json")
@@ -44,10 +44,12 @@ def main():
     iface = choose_network_interface(
         "\nSelect the adapter for capture or pointer signals: "
     )
+    counter_mode = choose_counter_mode()
 
     signal_sender = PointerSignalSender(
         iface=iface,
         message_bits=message_bits,
+        counter_mode=counter_mode,
     )
     matcher = SequentialBitMatcher(
         message_value,
@@ -60,7 +62,7 @@ def main():
         matcher=matcher,
         on_match=signal_sender.send_for_match,
         on_start=signal_sender.send_start_signal,
-        counter_mode=PERIODIC_MODE,
+        counter_mode=counter_mode,
     )
 
     try:

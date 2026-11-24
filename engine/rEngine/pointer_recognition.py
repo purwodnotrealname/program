@@ -84,7 +84,12 @@ class PointerRecognizer:
         }
         record.update({
             key: pointer_metadata[key]
-            for key in ("counter_mode", "signal_type")
+            for key in (
+                "counter_mode",
+                "signal_type",
+                "anchor_id",
+                "start_at_epoch",
+            )
             if key in pointer_metadata
         })
         return record, None
@@ -114,10 +119,16 @@ class PointerRecognizer:
                 metadata = {"name": record_name}
                 counter_mode = cls._field_value(fields, "counter_mode")
                 signal_type = cls._field_value(fields, "signal_type")
+                anchor_id = cls._field_value(fields, "anchor_id")
+                start_at_epoch = cls._field_value(fields, "start_at_epoch")
                 if counter_mode is not None:
                     metadata["counter_mode"] = counter_mode
                 if signal_type is not None:
                     metadata["signal_type"] = signal_type
+                if anchor_id is not None:
+                    metadata["anchor_id"] = anchor_id
+                if start_at_epoch is not None:
+                    metadata["start_at_epoch"] = start_at_epoch
                 return metadata
 
             answer = answer.payload

@@ -9,7 +9,11 @@ import os
 from collections import deque
 from pathlib import Path
 
-from engine.periodic_counter import OUTPUT_BITS, PERIODIC_MODE
+from engine.periodic_counter import (
+    OUTPUT_BITS,
+    PERIODIC_MODE,
+    SYNCED_CLOCK_MODE,
+)
 
 
 BUFFER_CAPACITY = 4
@@ -18,12 +22,20 @@ BUFFER_CAPACITY = 4
 class ReceiverHistoryStore:
     """Kelola empat counter terbaru yang dikonsumsi pointer serta log historis."""
 
-    def __init__(self, buffer_path, log_path, capacity=BUFFER_CAPACITY):
+    def __init__(
+        self,
+        buffer_path,
+        log_path,
+        capacity=BUFFER_CAPACITY,
+        counter_mode=PERIODIC_MODE,
+    ):
         """Pulihkan buffer periodic yang tersimpan atau siapkan buffer baru."""
+        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE):
+            raise ValueError(f"unsupported counter mode: {counter_mode!r}")
         self.buffer_path = Path(buffer_path)
         self.log_path = Path(log_path)
         self.capacity = capacity
-        self.counter_mode = PERIODIC_MODE
+        self.counter_mode = counter_mode
         self.buffer_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         existing, needs_rewrite = self._load_existing()
@@ -63,7 +75,7 @@ class ReceiverHistoryStore:
                 or any(bit not in "01" for bit in counter_bits)
             ):
                 continue
-            clean_records.append({
+            clean_record = {
                 "session_id": record.get("session_id"),
                 "sample_no": record.get("sample_no"),
                 "protocol": record.get("protocol"),
@@ -71,7 +83,14 @@ class ReceiverHistoryStore:
                 "timestamp": record.get("timestamp"),
                 "counter": record["counter"],
                 "counter_bits": counter_bits,
-            })
+            }
+            clock_tick_epoch = record.get("clock_tick_epoch")
+            if (
+                isinstance(clock_tick_epoch, int)
+                and not isinstance(clock_tick_epoch, bool)
+            ):
+                clean_record["clock_tick_epoch"] = clock_tick_epoch
+            clean_records.append(clean_record)
         return clean_records, needs_rewrite
 
     @property

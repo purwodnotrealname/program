@@ -8,7 +8,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 
 from engine.rEngine.history_extract import ReceiverHistoryExtractor
-from engine.interface_utils import choose_network_interface
+from engine.interface_utils import choose_counter_mode, choose_network_interface
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -36,12 +36,14 @@ def main():
         "\nSelect the adapter index to capture on: "
     )
     pointer_source_ip = choose_pointer_source_ip()
+    counter_mode = choose_counter_mode()
     receiver = ReceiverHistoryExtractor(
         iface=iface,
         buffer_path=PERIODIC_B_BUFFER_FILE,
         log_path=PERIODIC_B_LOG_FILE,
         secret_bits_path=SECRET_BITS_FILE,
         pointer_source_ip=pointer_source_ip,
+        counter_mode=counter_mode,
     )
 
     try:

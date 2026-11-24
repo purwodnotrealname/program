@@ -8,8 +8,14 @@ from scapy.all import conf, get_if_addr, get_if_hwaddr, sendp
 from scapy.layers.dns import DNS, DNSRR
 from scapy.layers.inet import IP, UDP
 from scapy.layers.l2 import Ether
+from scapy.sendrecv import sniff
 
-from engine.periodic_counter import PERIODIC_MODE
+from engine.arp_anchor import ARP_ANCHOR_FILTER, get_arp_anchor
+from engine.periodic_counter import (
+    PERIODIC_MODE,
+    SYNCED_CLOCK_MODE,
+    next_minute_epoch,
+)
 
 MDNS_GROUP_IP = "224.0.0.251"
 MDNS_GROUP_MAC = "01:00:5e:00:00:fb"
@@ -30,12 +36,16 @@ class PointerSignalSender:
         iface=None,
         message_bits="",
         output_file=SIGNAL_LOG_FILE,
+        counter_mode=PERIODIC_MODE,
     ):
         if not message_bits or any(bit not in "01" for bit in message_bits):
             raise ValueError("message_bits must be a non-empty binary string")
+        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE):
+            raise ValueError(f"unsupported counter mode: {counter_mode!r}")
 
         self.iface = iface if iface is not None else conf.iface
         self.message_bits = message_bits
+        self.counter_mode = counter_mode
         self.session_id = uuid.uuid4().hex[:12]
         self.source_ip = get_if_addr(self.iface)
         self.source_mac = get_if_hwaddr(self.iface)
@@ -63,7 +73,7 @@ class PointerSignalSender:
         txt_fields = [
             SIGNAL_SIGNATURE,
             f"event_id={event_id}",
-            f"counter_mode={PERIODIC_MODE}",
+            f"counter_mode={self.counter_mode}",
             f"sample_no={sample_no}",
             f"counter_bits={sample_bits}",
         ]
@@ -137,7 +147,7 @@ class PointerSignalSender:
             "source_mac": self.source_mac,
             "destination_ip": MDNS_GROUP_IP,
             "destination_port": MDNS_PORT,
-            "counter_mode": PERIODIC_MODE,
+            "counter_mode": self.counter_mode,
             "counter_identity": {
                 "sample_no": sample_no,
                 "window_index": attempt["window_index"],
@@ -156,17 +166,84 @@ class PointerSignalSender:
         )
 
     def send_start_signal(self):
-        event_id = f"s{self.session_id}-periodic-start"
-        packet = self._build_mdns_packet(
-            event_id,
+        print(
+            "Sending startup mDNS arm before waiting for a broadcast ARP "
+            "anchor...",
+            flush=True,
+        )
+        arm_event_id = f"s{self.session_id}-periodic-arm"
+        arm_packet = self._build_mdns_packet(
+            arm_event_id,
             [
                 SIGNAL_SIGNATURE,
-                f"event_id={event_id}",
-                f"counter_mode={PERIODIC_MODE}",
-                "signal_type=start",
+                f"event_id={arm_event_id}",
+                f"counter_mode={self.counter_mode}",
+                "signal_type=arm",
             ],
         )
-        send_started_at = time.perf_counter()
+        arm_record = {
+            "event_id": arm_event_id,
+            "session_id": self.session_id,
+            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+            "interface": self.iface,
+            "source_ip": self.source_ip,
+            "source_mac": self.source_mac,
+            "destination_ip": MDNS_GROUP_IP,
+            "destination_port": MDNS_PORT,
+            "counter_mode": self.counter_mode,
+            "signal_type": "arm",
+            "wire_frame_hex": bytes(arm_packet).hex(),
+            "send_status": "sent",
+        }
+        self._send_packet(arm_packet, arm_record)
+        print(f"Startup mDNS arm sent for {arm_event_id}", flush=True)
+
+        print("Waiting for a broadcast ARP frame...", flush=True)
+        anchor_observed_at = []
+
+        def record_anchor_observation(_packet):
+            if not anchor_observed_at:
+                anchor_observed_at.append((time.perf_counter(), time.time()))
+
+        anchor_packets = sniff(
+            iface=self.iface,
+            filter=ARP_ANCHOR_FILTER,
+            count=1,
+            store=True,
+            prn=record_anchor_observation,
+        )
+        if not anchor_packets:
+            raise RuntimeError("No broadcast ARP anchor was captured.")
+        if not anchor_observed_at:
+            raise RuntimeError("Could not timestamp the ARP anchor observation.")
+        anchor = get_arp_anchor(anchor_packets[0])
+        if anchor is None:
+            raise RuntimeError("Captured ARP frame is not a valid broadcast anchor.")
+
+        print(
+            f"ARP anchor observed ({anchor['src_ip']} -> {anchor['target_ip']}, "
+            f"id={anchor['anchor_id']}).",
+            flush=True,
+        )
+        anchor_perf_counter, anchor_wallclock = anchor_observed_at[0]
+        start_at_epoch = None
+        if self.counter_mode == SYNCED_CLOCK_MODE:
+            start_at_epoch = next_minute_epoch(anchor_wallclock)
+
+        event_id = f"s{self.session_id}-periodic-start"
+        start_fields = [
+            SIGNAL_SIGNATURE,
+            f"event_id={event_id}",
+            f"counter_mode={self.counter_mode}",
+            "signal_type=start",
+            f"anchor_id={anchor['anchor_id']}",
+        ]
+        if start_at_epoch is not None:
+            start_fields.append(f"start_at_epoch={start_at_epoch}")
+        packet = self._build_mdns_packet(
+            event_id,
+            start_fields,
+        )
         record = {
             "event_id": event_id,
             "session_id": self.session_id,
@@ -176,11 +253,24 @@ class PointerSignalSender:
             "source_mac": self.source_mac,
             "destination_ip": MDNS_GROUP_IP,
             "destination_port": MDNS_PORT,
-            "counter_mode": PERIODIC_MODE,
+            "counter_mode": self.counter_mode,
             "signal_type": "start",
+            "arp_anchor": anchor,
             "wire_frame_hex": bytes(packet).hex(),
             "send_status": "sent",
         }
+        if start_at_epoch is not None:
+            record["start_at_epoch"] = start_at_epoch
         self._send_packet(packet, record)
+        if start_at_epoch is not None:
+            start_at = datetime.fromtimestamp(start_at_epoch).isoformat(
+                timespec="seconds"
+            )
+            print(
+                f"Startup pointer sent for {event_id}; synchronized counter "
+                f"will start at {start_at}.",
+                flush=True,
+            )
+            return start_at_epoch
         print(f"Startup pointer sent for {event_id}")
-        return send_started_at
+        return anchor_perf_counter

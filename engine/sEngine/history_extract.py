@@ -9,6 +9,7 @@ from engine.periodic_counter import (
     OUTPUT_BITS,
     PERIODIC_COUNTER_INTERVAL_SECONDS,
     PERIODIC_MODE,
+    SYNCED_CLOCK_MODE,
     PeriodicCounterState,
     timestamp_now,
 )
@@ -25,13 +26,15 @@ class ICDExtractor:
         on_start=None,
         counter_mode=PERIODIC_MODE,
     ):
-        if counter_mode != PERIODIC_MODE:
-            raise ValueError("ICDExtractor only supports the periodic counter")
+        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE):
+            raise ValueError(
+                "ICDExtractor supports legacy or synchronized clock mode"
+            )
         if not callable(on_start):
             raise ValueError("Periodic-B requires an on_start pointer callback")
 
         self.iface = iface
-        self.counter_mode = PERIODIC_MODE
+        self.counter_mode = counter_mode
         self.matcher = matcher
         self.on_match = on_match
         self.on_start = on_start
@@ -40,7 +43,7 @@ class ICDExtractor:
         self.t0_wallclock = None
         self._counter_state = PeriodicCounterState()
 
-    def _process_periodic_sample(self, sample_no):
+    def _process_periodic_sample(self, sample_no, clock_tick_epoch=None):
         counter = self._counter_state.next_value()
         record = {
             "sample_no": sample_no,
@@ -50,6 +53,8 @@ class ICDExtractor:
             "counter": counter,
             "bit_value": counter,
         }
+        if clock_tick_epoch is not None:
+            record["clock_tick_epoch"] = clock_tick_epoch
         self.records.append(record)
         self.sample_count += 1
 
@@ -86,7 +91,7 @@ class ICDExtractor:
                 except Exception as exc:
                     print(f"       - pointer signal failed: {exc}", flush=True)
 
-    def _start_periodic(self, start_at):
+    def _start_periodic(self, start_reference):
         self.t0_wallclock = timestamp_now()
         if self.iface is None:
             print("Pointer interface: Scapy default", flush=True)
@@ -96,7 +101,7 @@ class ICDExtractor:
                 flush=True,
             )
         print(
-            "Counter mode: periodic, packet independent "
+            f"Counter mode: {self.counter_mode}, packet independent "
             f"(interval {PERIODIC_COUNTER_INTERVAL_SECONDS:g} seconds).",
             flush=True,
         )
@@ -107,25 +112,44 @@ class ICDExtractor:
             )
         print("Press Ctrl+C to stop and save results.\n", flush=True)
 
-        next_tick = start_at or time.perf_counter()
+        next_tick_epoch = None
+        if self.counter_mode == SYNCED_CLOCK_MODE:
+            if isinstance(start_reference, bool) or not isinstance(
+                start_reference, (int, float)
+            ):
+                raise ValueError(
+                    "Synchronized clock mode requires an absolute start epoch"
+                )
+            next_tick_epoch = int(start_reference)
+            next_tick = time.perf_counter() + max(
+                0.0, next_tick_epoch - time.time()
+            )
+        else:
+            next_tick = (
+                start_reference
+                if start_reference is not None
+                else time.perf_counter()
+            )
         while self.matcher is None or not self.matcher.is_complete:
             delay = next_tick - time.perf_counter()
             if delay > 0:
                 time.sleep(delay)
-            self._process_periodic_sample(self.sample_count + 1)
-            next_tick = max(
-                next_tick + PERIODIC_COUNTER_INTERVAL_SECONDS,
-                time.perf_counter() + PERIODIC_COUNTER_INTERVAL_SECONDS,
+            self._process_periodic_sample(
+                self.sample_count + 1,
+                clock_tick_epoch=next_tick_epoch,
             )
+            next_tick += PERIODIC_COUNTER_INTERVAL_SECONDS
+            if next_tick_epoch is not None:
+                next_tick_epoch += int(PERIODIC_COUNTER_INTERVAL_SECONDS)
 
     def start(self):
         print(
-            "Periodic-B: sending startup pointer, then generating history bits "
-            "from the periodic counter without observing PoI.",
+            "Periodic-B: sending an mDNS arm, waiting for a broadcast ARP "
+            "anchor, confirming it, then generating history bits from the counter.",
             flush=True,
         )
-        start_at = self.on_start()
-        self._start_periodic(start_at=start_at)
+        start_reference = self.on_start()
+        self._start_periodic(start_reference=start_reference)
 
     def save_json(self, filepath="history_results.json", verbose=True):
         output = {

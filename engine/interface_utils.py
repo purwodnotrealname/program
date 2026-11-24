@@ -2,6 +2,8 @@
 
 from scapy.all import conf, get_if_list
 
+from engine.periodic_counter import PERIODIC_MODE, SYNCED_CLOCK_MODE
+
 
 def list_interfaces():
     """Ambil identifier adapter yang akan diberikan ke Scapy."""
@@ -45,3 +47,22 @@ def choose_network_interface(prompt):
             return interfaces[index]
         except (ValueError, IndexError):
             print("Invalid selection. Enter one of the listed indexes.")
+
+
+def choose_counter_mode():
+    """Let sender and receiver select the same counter clock strategy."""
+    print("Counter modes:")
+    print("  [1] Legacy: counter starts from the observed ARP packet")
+    print(
+        "  [2] Synchronized clock: wait for the next minute boundary after ARP, "
+        "then tick every second (both system clocks must already be synchronized)"
+    )
+    while True:
+        choice = input(
+            "Select counter mode (sender and receiver must choose the same): "
+        ).strip()
+        if choice == "1":
+            return PERIODIC_MODE
+        if choice == "2":
+            return SYNCED_CLOCK_MODE
+        print("Invalid selection. Enter 1 or 2.")
