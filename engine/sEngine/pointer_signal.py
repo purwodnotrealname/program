@@ -166,37 +166,44 @@ class PointerSignalSender:
         )
 
     def send_start_signal(self):
-        print(
-            "Sending startup mDNS arm before waiting for a broadcast ARP "
-            "anchor...",
-            flush=True,
-        )
-        arm_event_id = f"s{self.session_id}-periodic-arm"
-        arm_packet = self._build_mdns_packet(
-            arm_event_id,
-            [
-                SIGNAL_SIGNATURE,
-                f"event_id={arm_event_id}",
-                f"counter_mode={self.counter_mode}",
-                "signal_type=arm",
-            ],
-        )
-        arm_record = {
-            "event_id": arm_event_id,
-            "session_id": self.session_id,
-            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
-            "interface": self.iface,
-            "source_ip": self.source_ip,
-            "source_mac": self.source_mac,
-            "destination_ip": MDNS_GROUP_IP,
-            "destination_port": MDNS_PORT,
-            "counter_mode": self.counter_mode,
-            "signal_type": "arm",
-            "wire_frame_hex": bytes(arm_packet).hex(),
-            "send_status": "sent",
-        }
-        self._send_packet(arm_packet, arm_record)
-        print(f"Startup mDNS arm sent for {arm_event_id}", flush=True)
+        if self.counter_mode == SYNCED_CLOCK_MODE:
+            print(
+                "Synchronized clock mode: sniffing for a broadcast ARP "
+                "directly; no startup mDNS arm will be sent.",
+                flush=True,
+            )
+        else:
+            print(
+                "Sending startup mDNS arm before waiting for a broadcast "
+                "ARP anchor...",
+                flush=True,
+            )
+            arm_event_id = f"s{self.session_id}-periodic-arm"
+            arm_packet = self._build_mdns_packet(
+                arm_event_id,
+                [
+                    SIGNAL_SIGNATURE,
+                    f"event_id={arm_event_id}",
+                    f"counter_mode={self.counter_mode}",
+                    "signal_type=arm",
+                ],
+            )
+            arm_record = {
+                "event_id": arm_event_id,
+                "session_id": self.session_id,
+                "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+                "interface": self.iface,
+                "source_ip": self.source_ip,
+                "source_mac": self.source_mac,
+                "destination_ip": MDNS_GROUP_IP,
+                "destination_port": MDNS_PORT,
+                "counter_mode": self.counter_mode,
+                "signal_type": "arm",
+                "wire_frame_hex": bytes(arm_packet).hex(),
+                "send_status": "sent",
+            }
+            self._send_packet(arm_packet, arm_record)
+            print(f"Startup mDNS arm sent for {arm_event_id}", flush=True)
 
         print("Waiting for a broadcast ARP frame...", flush=True)
         anchor_observed_at = []

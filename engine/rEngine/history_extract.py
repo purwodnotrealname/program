@@ -67,7 +67,7 @@ class ReceiverHistoryExtractor:
         self._counter_state = PeriodicCounterState()
         self._next_periodic_tick = None
         self._next_periodic_tick_epoch = None
-        self._startup_armed = False
+        self._startup_armed = counter_mode == SYNCED_CLOCK_MODE
         self._start_pointer_seen = False
         self._pending_start = None
         self._observed_arp_anchors = OrderedDict()
@@ -188,6 +188,11 @@ class ReceiverHistoryExtractor:
 
     def _record_arm_pointer(self, pointer_record, timestamp):
         """Arm the receiver so only later ARP frames can anchor this run."""
+        if self.counter_mode == SYNCED_CLOCK_MODE:
+            self._note_recognition_rejection(
+                "startup mDNS arm is not used in synchronized clock mode"
+            )
+            return
         if self._start_pointer_seen:
             return
         self._startup_armed = True
@@ -342,7 +347,7 @@ class ReceiverHistoryExtractor:
             if not self._start_pointer_seen:
                 if not self._startup_armed:
                     self._note_recognition_rejection(
-                        "startup confirmation arrived before mDNS arm"
+                        "startup confirmation arrived before the receiver was armed"
                     )
                     return
                 anchor_id = pointer_record.get("anchor_id")
@@ -434,16 +439,23 @@ class ReceiverHistoryExtractor:
             f"Pointer source IPv4: {self.pointer_recognizer.sender_ip}",
             flush=True,
         )
-        print(
-            "Waiting for startup mDNS arm, then a broadcast ARP anchor and "
-            "its matching confirmation before starting the counter.",
-            flush=True,
-        )
         if self.counter_mode == SYNCED_CLOCK_MODE:
+            print(
+                "Sniffing broadcast ARP directly; waiting for its matching "
+                "startup confirmation.",
+                flush=True,
+            )
             print(
                 "Synchronized clock mode assumes both system clocks were "
                 "synchronized before communication; sampling starts at the "
-                "next minute boundary after ARP.",
+                "next minute boundary after ARP. Start the receiver before "
+                "the sender so it can capture the ARP anchor.",
+                flush=True,
+            )
+        else:
+            print(
+                "Waiting for startup mDNS arm, then a broadcast ARP anchor and "
+                "its matching confirmation before starting the counter.",
                 flush=True,
             )
         print(

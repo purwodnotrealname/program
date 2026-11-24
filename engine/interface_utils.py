@@ -54,8 +54,9 @@ def choose_counter_mode():
     print("Counter modes:")
     print("  [1] Legacy: counter starts from the observed ARP packet")
     print(
-        "  [2] Synchronized clock: wait for the next minute boundary after ARP, "
-        "then tick every second (both system clocks must already be synchronized)"
+        "  [2] Synchronized clock: sniff ARP directly (no initial mDNS arm), "
+        "then start at the next minute boundary; sync both clocks and start "
+        "receiver first"
     )
     while True:
         choice = input(

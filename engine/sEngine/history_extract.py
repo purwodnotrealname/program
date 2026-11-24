@@ -143,11 +143,18 @@ class ICDExtractor:
                 next_tick_epoch += int(PERIODIC_COUNTER_INTERVAL_SECONDS)
 
     def start(self):
-        print(
-            "Periodic-B: sending an mDNS arm, waiting for a broadcast ARP "
-            "anchor, confirming it, then generating history bits from the counter.",
-            flush=True,
-        )
+        if self.counter_mode == SYNCED_CLOCK_MODE:
+            print(
+                "Periodic-B synchronized clock mode: sniffing for a broadcast "
+                "ARP directly, then confirming its shared start time.",
+                flush=True,
+            )
+        else:
+            print(
+                "Periodic-B: sending an mDNS arm, waiting for a broadcast ARP "
+                "anchor, confirming it, then generating history bits from the counter.",
+                flush=True,
+            )
         start_reference = self.on_start()
         self._start_periodic(start_reference=start_reference)
 
