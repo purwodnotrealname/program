@@ -31,6 +31,7 @@ POINTER_FILTER = (
     f"(udp and dst port {MDNS_PORT} and dst host {MDNS_GROUP_IP})"
 )
 CAPTURE_FILTER = f"({ARP_ANCHOR_FILTER} or {POINTER_FILTER})"
+POINTER_IDLE_COUNTER_SAMPLES = 16
 
 
 class ReceiverHistoryExtractor:
@@ -70,6 +71,8 @@ class ReceiverHistoryExtractor:
         self._startup_armed = counter_mode == SYNCED_CLOCK_MODE
         self._start_pointer_seen = False
         self._pending_start = None
+        self._last_pointer_sample_count = None
+        self._stop_requested = threading.Event()
         self._observed_arp_anchors = OrderedDict()
         self._observed_arp_anchor_perf_counters = {}
         self._queue = queue.Queue()
@@ -118,6 +121,7 @@ class ReceiverHistoryExtractor:
         while (
             self._next_periodic_tick is not None
             and now_perf_counter >= self._next_periodic_tick
+            and not self._stop_requested.is_set()
         ):
             next_tick = self._next_periodic_tick + PERIODIC_COUNTER_INTERVAL_SECONDS
             tick_epoch = self._next_periodic_tick_epoch
@@ -127,6 +131,18 @@ class ReceiverHistoryExtractor:
                 self._next_periodic_tick_epoch = tick_epoch + int(
                     PERIODIC_COUNTER_INTERVAL_SECONDS
                 )
+            if (
+                self._last_pointer_sample_count is not None
+                and self.sample_count - self._last_pointer_sample_count
+                >= POINTER_IDLE_COUNTER_SAMPLES
+            ):
+                print(
+                    f"No data pointer received for "
+                    f"{POINTER_IDLE_COUNTER_SAMPLES} counter attempts; "
+                    "stopping receiver.",
+                    flush=True,
+                )
+                self._stop_requested.set()
 
     def _record_start_pointer(
         self,
@@ -301,6 +317,7 @@ class ReceiverHistoryExtractor:
         })
         if history_record is not None:
             self.store.pop_latest()
+        self._last_pointer_sample_count = self.sample_count
         print(
             f"Pointer from "
             f"{pointer_record['src_ip'] or pointer_record['src_mac'] or '?'} "
@@ -321,6 +338,8 @@ class ReceiverHistoryExtractor:
     def _process_packet(self, packet, timestamp, arrival_perf_counter):
         """Observe ARP anchors and process startup/data pointers in order."""
         self._emit_due_periodic_values(arrival_perf_counter)
+        if self._stop_requested.is_set():
+            return
         if self._observe_arp_anchor(
             packet, timestamp, arrival_perf_counter
         ):
@@ -394,7 +413,10 @@ class ReceiverHistoryExtractor:
         """Proses frame antrean dan timer counter pada satu worker terurut."""
         while True:
             timeout = None
-            if self._next_periodic_tick is not None:
+            if (
+                self._next_periodic_tick is not None
+                and not self._stop_requested.is_set()
+            ):
                 timeout = max(
                     0.0,
                     self._next_periodic_tick - time.perf_counter(),
@@ -402,7 +424,8 @@ class ReceiverHistoryExtractor:
             try:
                 item = self._queue.get(timeout=timeout)
             except queue.Empty:
-                self._emit_due_periodic_values(time.perf_counter())
+                if not self._stop_requested.is_set():
+                    self._emit_due_periodic_values(time.perf_counter())
                 continue
 
             try:
@@ -481,8 +504,8 @@ class ReceiverHistoryExtractor:
             sniffer_started = True
             if not started.wait(timeout=5):
                 raise RuntimeError("Scapy sniffer did not start within 5 seconds.")
-            while sniffer.running:
-                time.sleep(0.1)
+            while sniffer.running and not self._stop_requested.wait(0.1):
+                pass
         finally:
             try:
                 if sniffer_started:

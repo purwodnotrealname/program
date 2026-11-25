@@ -9845,6 +9845,143 @@
       "wire_frame_hex": "01005e0000fb1091d1efef9d08004500011b00010000ff11aafec0a86e2ee00000fb14e914e90107d02500008500000100010000000003777777076578616d706c6503636f6d00000100011c736636623832323132383562312d706572696f6469632d73746172740c5f6863632d706f696e746572045f756470056c6f63616c000010800100000078009e126170703d6863632d706f696e7465722d7631256576656e745f69643d736636623832323132383562312d706572696f6469632d737461727419636f756e7465725f6d6f64653d73796e6365645f636c6f636b117369676e616c5f747970653d73746172741e616e63686f725f69643d66393066343062386232613562613539356664301973746172745f61745f65706f63683d31373935353134323230",
       "send_status": "sent",
       "start_at_epoch": 1795514220
+    },
+    {
+      "event_id": "s657f1dfed49e-periodic-start",
+      "session_id": "657f1dfed49e",
+      "timestamp": "2026-11-24T18:06:48.824",
+      "interface": "\\Device\\NPF_{087FD757-EA4B-4CC8-B4E2-481BB410C89E}",
+      "source_ip": "192.168.110.46",
+      "source_mac": "10:91:d1:ef:ef:9d",
+      "destination_ip": "224.0.0.251",
+      "destination_port": 5353,
+      "counter_mode": "synced_clock",
+      "signal_type": "start",
+      "arp_anchor": {
+        "anchor_id": "47a5f83fbd9e57f312e7",
+        "operation": 1,
+        "src_mac": "ae:7b:ec:ee:a6:97",
+        "src_ip": "192.168.110.47",
+        "target_mac": "00:00:00:00:00:00",
+        "target_ip": "192.168.110.1"
+      },
+      "wire_frame_hex": "01005e0000fb1091d1efef9d08004500011b00010000ff11aafec0a86e2ee00000fb14e914e90107389100008500000100010000000003777777076578616d706c6503636f6d00000100011c733635376631646665643439652d706572696f6469632d73746172740c5f6863632d706f696e746572045f756470056c6f63616c000010800100000078009e126170703d6863632d706f696e7465722d7631256576656e745f69643d733635376631646665643439652d706572696f6469632d737461727419636f756e7465725f6d6f64653d73796e6365645f636c6f636b117369676e616c5f747970653d73746172741e616e63686f725f69643d34376135663833666264396535376633313265371973746172745f61745f65706f63683d31373935353134383230",
+      "send_status": "sent",
+      "start_at_epoch": 1795514820
+    },
+    {
+      "event_id": "s657f1dfed49e-t14-w0",
+      "session_id": "657f1dfed49e",
+      "timestamp": "2026-11-24T18:07:13.008",
+      "interface": "\\Device\\NPF_{087FD757-EA4B-4CC8-B4E2-481BB410C89E}",
+      "source_ip": "192.168.110.46",
+      "source_mac": "10:91:d1:ef:ef:9d",
+      "destination_ip": "224.0.0.251",
+      "destination_port": 5353,
+      "counter_mode": "synced_clock",
+      "counter_identity": {
+        "sample_no": 14,
+        "window_index": 0
+      },
+      "message_bits": "110100001110",
+      "message_bit_length": 12,
+      "match": {
+        "sample_no": 14,
+        "counter_value": 13,
+        "window_index": 0,
+        "window_value": 13,
+        "window_width": 4,
+        "compared_value": 13,
+        "status": "matched",
+        "counter_mode": "synced_clock",
+        "sample": {
+          "sample_no": 14,
+          "protocol": "PERIODIC",
+          "counter_mode": "synced_clock",
+          "timestamp": "2026-11-24T18:07:13.001",
+          "counter": 13,
+          "bit_value": 13,
+          "clock_tick_epoch": 1795514833
+        }
+      },
+      "wire_frame_hex": "01005e0000fb1091d1efef9d08004500014600010000ff11aad3c0a86e2ee00000fb14e914e9013281cc00008500000100010000000003777777076578616d706c6503636f6d000001000114733635376631646665643439652d7431342d77300c5f6863632d706f696e746572045f756470056c6f63616c00001080010000007800d1126170703d6863632d706f696e7465722d76311d6576656e745f69643d733635376631646665643439652d7431342d773019636f756e7465725f6d6f64653d73796e6365645f636c6f636b0c73616d706c655f6e6f3d313411636f756e7465725f626974733d313130310e77696e646f775f696e6465783d301077696e646f775f626974733d3131303112636f6d70617265645f626974733d31313031156d6573736167655f6269745f6c656e6774683d31321d6d6573736167655f626974735f3030303d313130313030303031313130",
+      "send_status": "sent"
+    },
+    {
+      "event_id": "s657f1dfed49e-t17-w1",
+      "session_id": "657f1dfed49e",
+      "timestamp": "2026-11-24T18:07:16.017",
+      "interface": "\\Device\\NPF_{087FD757-EA4B-4CC8-B4E2-481BB410C89E}",
+      "source_ip": "192.168.110.46",
+      "source_mac": "10:91:d1:ef:ef:9d",
+      "destination_ip": "224.0.0.251",
+      "destination_port": 5353,
+      "counter_mode": "synced_clock",
+      "counter_identity": {
+        "sample_no": 17,
+        "window_index": 1
+      },
+      "message_bits": "110100001110",
+      "message_bit_length": 12,
+      "match": {
+        "sample_no": 17,
+        "counter_value": 0,
+        "window_index": 1,
+        "window_value": 0,
+        "window_width": 4,
+        "compared_value": 0,
+        "status": "matched",
+        "counter_mode": "synced_clock",
+        "sample": {
+          "sample_no": 17,
+          "protocol": "PERIODIC",
+          "counter_mode": "synced_clock",
+          "timestamp": "2026-11-24T18:07:16.009",
+          "counter": 0,
+          "bit_value": 0,
+          "clock_tick_epoch": 1795514836
+        }
+      },
+      "wire_frame_hex": "01005e0000fb1091d1efef9d08004500014600010000ff11aad3c0a86e2ee00000fb14e914e901327dcd00008500000100010000000003777777076578616d706c6503636f6d000001000114733635376631646665643439652d7431372d77310c5f6863632d706f696e746572045f756470056c6f63616c00001080010000007800d1126170703d6863632d706f696e7465722d76311d6576656e745f69643d733635376631646665643439652d7431372d773119636f756e7465725f6d6f64653d73796e6365645f636c6f636b0c73616d706c655f6e6f3d313711636f756e7465725f626974733d303030300e77696e646f775f696e6465783d311077696e646f775f626974733d3030303012636f6d70617265645f626974733d30303030156d6573736167655f6269745f6c656e6774683d31321d6d6573736167655f626974735f3030303d313130313030303031313130",
+      "send_status": "sent"
+    },
+    {
+      "event_id": "s657f1dfed49e-t31-w2",
+      "session_id": "657f1dfed49e",
+      "timestamp": "2026-11-24T18:07:30.012",
+      "interface": "\\Device\\NPF_{087FD757-EA4B-4CC8-B4E2-481BB410C89E}",
+      "source_ip": "192.168.110.46",
+      "source_mac": "10:91:d1:ef:ef:9d",
+      "destination_ip": "224.0.0.251",
+      "destination_port": 5353,
+      "counter_mode": "synced_clock",
+      "counter_identity": {
+        "sample_no": 31,
+        "window_index": 2
+      },
+      "message_bits": "110100001110",
+      "message_bit_length": 12,
+      "match": {
+        "sample_no": 31,
+        "counter_value": 14,
+        "window_index": 2,
+        "window_value": 14,
+        "window_width": 4,
+        "compared_value": 14,
+        "status": "matched",
+        "counter_mode": "synced_clock",
+        "sample": {
+          "sample_no": 31,
+          "protocol": "PERIODIC",
+          "counter_mode": "synced_clock",
+          "timestamp": "2026-11-24T18:07:30.005",
+          "counter": 14,
+          "bit_value": 14,
+          "clock_tick_epoch": 1795514850
+        }
+      },
+      "wire_frame_hex": "01005e0000fb1091d1efef9d08004500014600010000ff11aad3c0a86e2ee00000fb14e914e901328bbf00008500000100010000000003777777076578616d706c6503636f6d000001000114733635376631646665643439652d7433312d77320c5f6863632d706f696e746572045f756470056c6f63616c00001080010000007800d1126170703d6863632d706f696e7465722d76311d6576656e745f69643d733635376631646665643439652d7433312d773219636f756e7465725f6d6f64653d73796e6365645f636c6f636b0c73616d706c655f6e6f3d333111636f756e7465725f626974733d313131300e77696e646f775f696e6465783d321077696e646f775f626974733d3131313012636f6d70617265645f626974733d31313130156d6573736167655f6269745f6c656e6774683d31321d6d6573736167655f626974735f3030303d313130313030303031313130",
+      "send_status": "sent"
     }
   ]
 }

@@ -2,81 +2,288 @@
   "interface": "\\Device\\NPF_{087FD757-EA4B-4CC8-B4E2-481BB410C89E}",
   "counter_mode": "synced_clock",
   "counter_interval_seconds": 1.0,
-  "initialization_time": "2026-11-24T17:56:37.775",
+  "initialization_time": "2026-11-24T18:06:48.939",
   "total_packets": null,
-  "total_counter_samples": 8,
+  "total_counter_samples": 31,
   "samples": [
     {
       "sample_no": 1,
       "protocol": "PERIODIC",
       "counter_mode": "synced_clock",
-      "timestamp": "2026-11-24T17:57:00.014",
+      "timestamp": "2026-11-24T18:07:00.001",
       "counter": 0,
       "bit_value": 0,
-      "clock_tick_epoch": 1795514220
+      "clock_tick_epoch": 1795514820
     },
     {
       "sample_no": 2,
       "protocol": "PERIODIC",
       "counter_mode": "synced_clock",
-      "timestamp": "2026-11-24T17:57:01.013",
+      "timestamp": "2026-11-24T18:07:01.012",
       "counter": 1,
       "bit_value": 1,
-      "clock_tick_epoch": 1795514221
+      "clock_tick_epoch": 1795514821
     },
     {
       "sample_no": 3,
       "protocol": "PERIODIC",
       "counter_mode": "synced_clock",
-      "timestamp": "2026-11-24T17:57:02.004",
+      "timestamp": "2026-11-24T18:07:02.011",
       "counter": 2,
       "bit_value": 2,
-      "clock_tick_epoch": 1795514222
+      "clock_tick_epoch": 1795514822
     },
     {
       "sample_no": 4,
       "protocol": "PERIODIC",
       "counter_mode": "synced_clock",
-      "timestamp": "2026-11-24T17:57:03.004",
+      "timestamp": "2026-11-24T18:07:03.005",
       "counter": 3,
       "bit_value": 3,
-      "clock_tick_epoch": 1795514223
+      "clock_tick_epoch": 1795514823
     },
     {
       "sample_no": 5,
       "protocol": "PERIODIC",
       "counter_mode": "synced_clock",
-      "timestamp": "2026-11-24T17:57:04.006",
+      "timestamp": "2026-11-24T18:07:04.018",
       "counter": 4,
       "bit_value": 4,
-      "clock_tick_epoch": 1795514224
+      "clock_tick_epoch": 1795514824
     },
     {
       "sample_no": 6,
       "protocol": "PERIODIC",
       "counter_mode": "synced_clock",
-      "timestamp": "2026-11-24T17:57:05.006",
+      "timestamp": "2026-11-24T18:07:05.016",
       "counter": 5,
       "bit_value": 5,
-      "clock_tick_epoch": 1795514225
+      "clock_tick_epoch": 1795514825
     },
     {
       "sample_no": 7,
       "protocol": "PERIODIC",
       "counter_mode": "synced_clock",
-      "timestamp": "2026-11-24T17:57:06.005",
+      "timestamp": "2026-11-24T18:07:06.012",
       "counter": 6,
       "bit_value": 6,
-      "clock_tick_epoch": 1795514226
+      "clock_tick_epoch": 1795514826
     },
     {
       "sample_no": 8,
       "protocol": "PERIODIC",
       "counter_mode": "synced_clock",
-      "timestamp": "2026-11-24T17:57:07.003",
+      "timestamp": "2026-11-24T18:07:07.012",
       "counter": 7,
       "bit_value": 7,
-      "clock_tick_epoch": 1795514227
+      "clock_tick_epoch": 1795514827
+    },
+    {
+      "sample_no": 9,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:08.009",
+      "counter": 8,
+      "bit_value": 8,
+      "clock_tick_epoch": 1795514828
+    },
+    {
+      "sample_no": 10,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:09.004",
+      "counter": 9,
+      "bit_value": 9,
+      "clock_tick_epoch": 1795514829
+    },
+    {
+      "sample_no": 11,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:10.002",
+      "counter": 10,
+      "bit_value": 10,
+      "clock_tick_epoch": 1795514830
+    },
+    {
+      "sample_no": 12,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:11.015",
+      "counter": 11,
+      "bit_value": 11,
+      "clock_tick_epoch": 1795514831
+    },
+    {
+      "sample_no": 13,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:12.015",
+      "counter": 12,
+      "bit_value": 12,
+      "clock_tick_epoch": 1795514832
+    },
+    {
+      "sample_no": 14,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:13.001",
+      "counter": 13,
+      "bit_value": 13,
+      "clock_tick_epoch": 1795514833
+    },
+    {
+      "sample_no": 15,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:14.015",
+      "counter": 14,
+      "bit_value": 14,
+      "clock_tick_epoch": 1795514834
+    },
+    {
+      "sample_no": 16,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:15.013",
+      "counter": 15,
+      "bit_value": 15,
+      "clock_tick_epoch": 1795514835
+    },
+    {
+      "sample_no": 17,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:16.009",
+      "counter": 0,
+      "bit_value": 0,
+      "clock_tick_epoch": 1795514836
+    },
+    {
+      "sample_no": 18,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:17.003",
+      "counter": 1,
+      "bit_value": 1,
+      "clock_tick_epoch": 1795514837
+    },
+    {
+      "sample_no": 19,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:18.002",
+      "counter": 2,
+      "bit_value": 2,
+      "clock_tick_epoch": 1795514838
+    },
+    {
+      "sample_no": 20,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:19.001",
+      "counter": 3,
+      "bit_value": 3,
+      "clock_tick_epoch": 1795514839
+    },
+    {
+      "sample_no": 21,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:20.016",
+      "counter": 4,
+      "bit_value": 4,
+      "clock_tick_epoch": 1795514840
+    },
+    {
+      "sample_no": 22,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:21.014",
+      "counter": 5,
+      "bit_value": 5,
+      "clock_tick_epoch": 1795514841
+    },
+    {
+      "sample_no": 23,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:22.012",
+      "counter": 6,
+      "bit_value": 6,
+      "clock_tick_epoch": 1795514842
+    },
+    {
+      "sample_no": 24,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:23.009",
+      "counter": 7,
+      "bit_value": 7,
+      "clock_tick_epoch": 1795514843
+    },
+    {
+      "sample_no": 25,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:24.009",
+      "counter": 8,
+      "bit_value": 8,
+      "clock_tick_epoch": 1795514844
+    },
+    {
+      "sample_no": 26,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:25.009",
+      "counter": 9,
+      "bit_value": 9,
+      "clock_tick_epoch": 1795514845
+    },
+    {
+      "sample_no": 27,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:26.001",
+      "counter": 10,
+      "bit_value": 10,
+      "clock_tick_epoch": 1795514846
+    },
+    {
+      "sample_no": 28,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:27.002",
+      "counter": 11,
+      "bit_value": 11,
+      "clock_tick_epoch": 1795514847
+    },
+    {
+      "sample_no": 29,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:28.016",
+      "counter": 12,
+      "bit_value": 12,
+      "clock_tick_epoch": 1795514848
+    },
+    {
+      "sample_no": 30,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:29.010",
+      "counter": 13,
+      "bit_value": 13,
+      "clock_tick_epoch": 1795514849
+    },
+    {
+      "sample_no": 31,
+      "protocol": "PERIODIC",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-24T18:07:30.005",
+      "counter": 14,
+      "bit_value": 14,
+      "clock_tick_epoch": 1795514850
     }
   ]
 }
