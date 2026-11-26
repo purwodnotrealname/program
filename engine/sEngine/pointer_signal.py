@@ -82,6 +82,18 @@ class PointerSignalSender:
             f"compared_bits={compared_bits}",
             f"message_bit_length={len(self.message_bits)}",
         ])
+        if self.counter_mode == UTC_MODE:
+            sample = attempt.get("sample")
+            tick_epoch = (
+                sample.get("clock_tick_epoch")
+                if isinstance(sample, dict)
+                else None
+            )
+            if isinstance(tick_epoch, bool) or not isinstance(tick_epoch, int):
+                raise ValueError(
+                    "UTC pointer requires the matched sample's tick epoch"
+                )
+            txt_fields.append(f"tick_epoch={tick_epoch}")
 
         return self._build_mdns_packet(event_id, txt_fields)
 

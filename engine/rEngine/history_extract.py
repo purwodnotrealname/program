@@ -1,7 +1,6 @@
 """Tangkap anchor ARP dan pointer Periodic-B untuk menghubungkan counter."""
 
 import json
-import math
 import queue
 import threading
 import time
@@ -19,8 +18,6 @@ from engine.periodic_counter import (
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
     UTC_MODE,
-    UTC_POINTER_MAX_PHASE_SECONDS,
-    UTC_POINTER_MIN_PHASE_SECONDS,
     UTC_TICK_PHASE_SECONDS,
     PeriodicCounterState,
     counter_for_utc_tick,
@@ -383,38 +380,42 @@ class ReceiverHistoryExtractor:
         if self.counter_mode == UTC_MODE:
             if capture_epoch is None:
                 capture_epoch = time.time()
-            phase = capture_epoch - math.floor(capture_epoch)
-            if UTC_POINTER_MIN_PHASE_SECONDS <= phase <= UTC_POINTER_MAX_PHASE_SECONDS:
-                arrival_tick_epoch = math.floor(capture_epoch)
-                advertised_bits = pointer_record.get("counter_bits")
+            advertised_bits = pointer_record.get("counter_bits")
+            if (
+                not isinstance(advertised_bits, str)
+                or len(advertised_bits) != OUTPUT_BITS
+                or any(bit not in "01" for bit in advertised_bits)
+            ):
+                history_record = None
+                empty_status = "missing_or_invalid_counter_bits"
+            else:
+                tick_value = pointer_record.get("tick_epoch")
+                try:
+                    tick_epoch = int(tick_value)
+                except (TypeError, ValueError):
+                    tick_epoch = None
                 if (
-                    not isinstance(advertised_bits, str)
-                    or len(advertised_bits) != OUTPUT_BITS
-                    or any(bit not in "01" for bit in advertised_bits)
+                    tick_epoch is None
+                    or str(tick_epoch) != str(tick_value)
                 ):
                     history_record = None
-                    empty_status = "missing_or_invalid_counter_bits"
+                    empty_status = "missing_or_invalid_tick_epoch"
+                elif (
+                    self._utc_start_tick_epoch is None
+                    or tick_epoch < self._utc_start_tick_epoch
+                ):
+                    history_record = None
+                    empty_status = "tick_epoch_before_utc_run_start"
                 else:
-                    advertised_counter = int(advertised_bits, 2)
-                    candidate_ticks = (
-                        arrival_tick_epoch - 1,
-                        arrival_tick_epoch,
-                        arrival_tick_epoch + 1,
+                    counter = counter_for_utc_tick(
+                        tick_epoch,
+                        self._utc_start_tick_epoch,
                     )
-                    matching_ticks = [
-                        tick_epoch
-                        for tick_epoch in candidate_ticks
-                        if counter_for_utc_tick(
-                            tick_epoch,
-                            self._utc_start_tick_epoch,
-                        ) == advertised_counter
-                    ]
-                    if len(matching_ticks) == 1:
-                        tick_epoch = matching_ticks[0]
-                        counter = counter_for_utc_tick(
-                            tick_epoch,
-                            self._utc_start_tick_epoch,
-                        )
+                    advertised_counter = int(advertised_bits, 2)
+                    if counter != advertised_counter:
+                        history_record = None
+                        empty_status = "utc_counter_does_not_match_tick_epoch"
+                    else:
                         history_record = {
                             "session_id": self.session_id,
                             "sample_no": tick_epoch,
@@ -426,19 +427,14 @@ class ReceiverHistoryExtractor:
                             "clock_tick_epoch": tick_epoch,
                         }
                         pointer_record["utc_tick_epoch"] = tick_epoch
-                        pointer_record["utc_tick_offset_seconds"] = (
-                            tick_epoch - arrival_tick_epoch
+                        pointer_record[
+                            "utc_tick_arrival_offset_seconds"
+                        ] = round(
+                            capture_epoch
+                            - (tick_epoch + UTC_TICK_PHASE_SECONDS),
+                            3,
                         )
-                    else:
-                        history_record = None
-                        empty_status = "utc_counter_does_not_match_arrival_time"
-            else:
-                history_record = None
-                empty_status = "outside_utc_pointer_window"
-                self._note_recognition_rejection(
-                    "UTC pointer arrived outside the expected tick window"
-                )
-            if history_record is None and empty_status != "outside_utc_pointer_window":
+            if history_record is None:
                 self._note_recognition_rejection(
                     f"UTC pointer sample could not be matched: {empty_status}"
                 )
