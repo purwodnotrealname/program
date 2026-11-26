@@ -27,7 +27,6 @@ MDNS_GROUP_IP = "224.0.0.251"
 MDNS_GROUP_MAC = "01:00:5e:00:00:fb"
 MDNS_PORT = 5353
 SIGNAL_SIGNATURE = "app=hcc-pointer-v1"
-MESSAGE_CHUNK_SIZE = 200
 SIGNAL_LOG_FILE = (
     Path(__file__).resolve().parents[2]
     / "engineDump"
@@ -56,10 +55,6 @@ class PointerSignalSender:
         self.source_ip = get_if_addr(self.iface)
         self.source_mac = get_if_hwaddr(self.iface)
         self.output_file = Path(output_file)
-        self.message_chunks = tuple(
-            message_bits[start : start + MESSAGE_CHUNK_SIZE]
-            for start in range(0, len(message_bits), MESSAGE_CHUNK_SIZE)
-        )
 
         if self.source_ip == "0.0.0.0":
             raise RuntimeError(
@@ -87,10 +82,6 @@ class PointerSignalSender:
             f"compared_bits={compared_bits}",
             f"message_bit_length={len(self.message_bits)}",
         ])
-        txt_fields.extend(
-            f"message_bits_{index:03d}={chunk}"
-            for index, chunk in enumerate(self.message_chunks)
-        )
 
         return self._build_mdns_packet(event_id, txt_fields)
 
