@@ -1,0 +1,48 @@
+{
+  "counter_mode": "utc_clock",
+  "capacity": 4,
+  "order": "newest_first",
+  "buffered_count": 4,
+  "counters": [
+    {
+      "session_id": "9e32eed4ec9e429a8482843a1fe2db3d",
+      "sample_no": 1081,
+      "protocol": "PERIODIC",
+      "counter_mode": "utc_clock",
+      "timestamp": "2026-11-26T19:54:29.004",
+      "counter": 8,
+      "counter_bits": "1000",
+      "clock_tick_epoch": 1795694069
+    },
+    {
+      "session_id": "9e32eed4ec9e429a8482843a1fe2db3d",
+      "sample_no": 1080,
+      "protocol": "PERIODIC",
+      "counter_mode": "utc_clock",
+      "timestamp": "2026-11-26T19:54:28.002",
+      "counter": 7,
+      "counter_bits": "0111",
+      "clock_tick_epoch": 1795694068
+    },
+    {
+      "session_id": "9e32eed4ec9e429a8482843a1fe2db3d",
+      "sample_no": 1079,
+      "protocol": "PERIODIC",
+      "counter_mode": "utc_clock",
+      "timestamp": "2026-11-26T19:54:27.008",
+      "counter": 6,
+      "counter_bits": "0110",
+      "clock_tick_epoch": 1795694067
+    },
+    {
+      "session_id": "9e32eed4ec9e429a8482843a1fe2db3d",
+      "sample_no": 1078,
+      "protocol": "PERIODIC",
+      "counter_mode": "utc_clock",
+      "timestamp": "2026-11-26T19:54:26.010",
+      "counter": 5,
+      "counter_bits": "0101",
+      "clock_tick_epoch": 1795694066
+    }
+  ]
+}

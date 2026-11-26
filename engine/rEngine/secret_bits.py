@@ -76,6 +76,10 @@ class ReceiverSecretBitsStore:
                     "bits": bits,
                     "pointer_no": pointer_event["pointer_no"],
                 }
+                if pointer_record.get("event_id") is not None:
+                    chunk["event_id"] = pointer_record["event_id"]
+                if pointer_record.get("window_index") is not None:
+                    chunk["window_index"] = pointer_record["window_index"]
                 self.data["secret_bits"] += bits
                 self.data["bit_length"] = len(self.data["secret_bits"])
                 self.data["chunks"].append(chunk)

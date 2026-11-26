@@ -1,5 +1,6 @@
 """Kenali pointer mDNS yang dibuat ``engine/sEngine/pointer_signal.py``."""
 
+import re
 from ipaddress import IPv4Address
 
 from scapy.layers.dns import DNS
@@ -12,16 +13,21 @@ from engine.pointer_protocol import (
     POINTER_SERVICE_SUFFIX,
     POINTER_TXT_SIGNATURE,
 )
+from engine.periodic_counter import TRIGGERED_MDNS_MODE
 
 DNS_TXT_TYPE = 16
+TRIGGERED_PROBE_LABEL = re.compile(
+    r"^hccp-([0-9a-f]{12})-w([0-9]{1,4})-t([0-9]{9,12})-c([01]{4})$"
+)
 
 
 class PointerRecognizer:
     """Validasi sumber dan TXT record pointer sebelum diteruskan ke extractor."""
 
-    def __init__(self, sender_ip):
-        """Simpan IPv4 sender agar frame pointer dari host lain diabaikan."""
+    def __init__(self, sender_ip, counter_mode=None):
+        """Simpan sumber tepercaya dan mode untuk memilih format pointer."""
         self.sender_ip = str(IPv4Address(sender_ip))
+        self.counter_mode = counter_mode
 
     def recognize(self, pkt):
         """Kembalikan metadata pointer valid, atau ``None`` untuk frame lain."""
@@ -57,7 +63,10 @@ class PointerRecognizer:
 
         dns = pkt[DNS]
         if not dns.qr:
+            if self.counter_mode == TRIGGERED_MDNS_MODE:
+                return self._inspect_triggered_probe(pkt, dns)
             return None, "DNS packet is a query (QR=0), expected a response"
+
         if not dns.aa:
             return None, "DNS response is not authoritative (AA=0)"
         if not dns.ancount:
@@ -95,6 +104,51 @@ class PointerRecognizer:
             if key in pointer_metadata
         })
         return record, None
+
+    def _inspect_triggered_probe(self, pkt, dns):
+        """Recognize a DNS-SD uniqueness probe emitted by a native trigger."""
+        if not dns.qdcount:
+            return None, "mDNS probe query has no question"
+
+        question = dns.qd
+        for _ in range(int(dns.qdcount)):
+            if not hasattr(question, "qname"):
+                break
+            query_name = self._text(question.qname).rstrip(".").lower()
+            if query_name.endswith(POINTER_SERVICE_SUFFIX):
+                prefix = query_name[: -len(POINTER_SERVICE_SUFFIX)].rstrip(".")
+                label = prefix.split(".")[-1]
+                match = TRIGGERED_PROBE_LABEL.fullmatch(label)
+                if match:
+                    session_id, window_index, tick_epoch, counter_bits = (
+                        match.groups()
+                    )
+                    event_id = label
+                    return {
+                        "packet_type": "mDNS",
+                        "signal_type": "probe",
+                        "counter_mode": TRIGGERED_MDNS_MODE,
+                        "src_ip": pkt[IP].src,
+                        "src_mac": pkt[Ether].src,
+                        "dst_ip": pkt[IP].dst,
+                        "dst_mac": pkt[Ether].dst,
+                        "src_port": pkt[UDP].sport,
+                        "dst_port": pkt[UDP].dport,
+                        "dns_record_name": query_name,
+                        "dns_record_type": int(question.qtype),
+                        "event_id": event_id,
+                        "session_id": session_id,
+                        "window_index": int(window_index),
+                        "counter_bits": counter_bits,
+                        "tick_epoch": tick_epoch,
+                    }, None
+
+            question = question.payload
+
+        return None, (
+            "mDNS query is not a triggered pointer probe with service suffix "
+            f"{POINTER_SERVICE_SUFFIX!r}"
+        )
 
     @classmethod
     def _find_pointer_txt_record(cls, dns):

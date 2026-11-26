@@ -17,6 +17,8 @@ from engine.periodic_counter import (
     PERIODIC_COUNTER_INTERVAL_SECONDS,
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
+    TRIGGERED_MDNS_MODE,
+    UTC_COUNTER_MODES,
     UTC_MODE,
     UTC_TICK_PHASE_SECONDS,
     PeriodicCounterState,
@@ -51,7 +53,12 @@ class ReceiverHistoryExtractor:
         counter_mode=PERIODIC_MODE,
     ):
         """Hubungkan recognizer, buffer, dan penyimpan secret untuk satu interface."""
-        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE):
+        if counter_mode not in (
+            PERIODIC_MODE,
+            SYNCED_CLOCK_MODE,
+            UTC_MODE,
+            TRIGGERED_MDNS_MODE,
+        ):
             raise ValueError(
                 "Receiver supports legacy, synchronized clock, or UTC mode"
             )
@@ -63,19 +70,33 @@ class ReceiverHistoryExtractor:
             counter_mode=counter_mode,
         )
         self.secret_bits_store = ReceiverSecretBitsStore(secret_bits_path)
-        self.pointer_recognizer = PointerRecognizer(pointer_source_ip)
+        self.pointer_recognizer = PointerRecognizer(
+            pointer_source_ip,
+            counter_mode=counter_mode,
+        )
         self.session_id = uuid.uuid4().hex
         self.sample_count = 0
         self.captured_packet_count = 0
         self.recognized_pointer_count = 0
         self.recognition_rejections = {}
+        self.duplicate_probe_count = 0
+        self._seen_probe_event_ids = OrderedDict()
         self._counter_state = PeriodicCounterState()
         self._next_periodic_tick = None
         self._next_periodic_tick_epoch = None
-        self._next_utc_tick_epoch = None
-        self._utc_start_tick_epoch = None
-        self._startup_armed = counter_mode == SYNCED_CLOCK_MODE
-        self._start_pointer_seen = False
+        self._next_utc_tick_epoch = (
+            utc_tick_epoch() + 1
+            if counter_mode == TRIGGERED_MDNS_MODE
+            else None
+        )
+        self._utc_start_tick_epoch = (
+            0 if counter_mode == TRIGGERED_MDNS_MODE else None
+        )
+        self._startup_armed = counter_mode in (
+            SYNCED_CLOCK_MODE,
+            TRIGGERED_MDNS_MODE,
+        )
+        self._start_pointer_seen = counter_mode == TRIGGERED_MDNS_MODE
         self._pending_start = None
         self._last_pointer_sample_count = None
         self._stop_requested = threading.Event()
@@ -103,7 +124,7 @@ class ReceiverHistoryExtractor:
     def _record_periodic_value(self, clock_tick_epoch=None):
         """Buat satu nilai counter, simpan ke buffer, dan tulis ke log receiver."""
         self.sample_count += 1
-        if self.counter_mode == UTC_MODE and clock_tick_epoch is not None:
+        if self.counter_mode in UTC_COUNTER_MODES and clock_tick_epoch is not None:
             if self._utc_start_tick_epoch is None:
                 raise RuntimeError("UTC start tick has not been initialized")
             counter = counter_for_utc_tick(
@@ -135,7 +156,7 @@ class ReceiverHistoryExtractor:
 
     def _emit_due_periodic_values(self, now_perf_counter, now_epoch=None):
         """Keluarkan sampel yang jadwal intervalnya sudah tiba."""
-        if self.counter_mode == UTC_MODE:
+        if self.counter_mode in UTC_COUNTER_MODES:
             if (
                 self._next_utc_tick_epoch is None
                 or self._stop_requested.is_set()
@@ -244,7 +265,7 @@ class ReceiverHistoryExtractor:
         if start_at_epoch is not None:
             start_event["start_at_epoch"] = start_at_epoch
         self.store.append_event(start_event)
-        if self.counter_mode == UTC_MODE:
+        if self.counter_mode in UTC_COUNTER_MODES:
             start_at = datetime.fromtimestamp(
                 start_at_epoch + UTC_TICK_PHASE_SECONDS
             ).isoformat(timespec="milliseconds")
@@ -377,7 +398,7 @@ class ReceiverHistoryExtractor:
         pointer_record["timestamp"] = timestamp
         buffer_snapshot = self.store.newest_first
         empty_status = "buffer_empty"
-        if self.counter_mode == UTC_MODE:
+        if self.counter_mode in UTC_COUNTER_MODES:
             if capture_epoch is None:
                 capture_epoch = time.time()
             advertised_bits = pointer_record.get("counter_bits")
@@ -460,7 +481,7 @@ class ReceiverHistoryExtractor:
             "counter": pointer_event.get("counter"),
             "counter_bits": pointer_event.get("bits"),
         })
-        if history_record is not None and self.counter_mode != UTC_MODE:
+        if history_record is not None and self.counter_mode not in UTC_COUNTER_MODES:
             self.store.pop_latest()
         self._last_pointer_sample_count = self.sample_count
         print(
@@ -553,6 +574,22 @@ class ReceiverHistoryExtractor:
                     start_at_epoch=start_at_epoch,
                 )
             return
+        if (
+            self.counter_mode == TRIGGERED_MDNS_MODE
+            and pointer_record.get("signal_type") == "probe"
+        ):
+            event_id = pointer_record["event_id"]
+            if event_id in self._seen_probe_event_ids:
+                self.duplicate_probe_count += 1
+                print(
+                    f"Duplicate native mDNS probe ignored for {event_id}; "
+                    "the first received probe is already the pointer.",
+                    flush=True,
+                )
+                return
+            self._seen_probe_event_ids[event_id] = timestamp
+            while len(self._seen_probe_event_ids) > 4096:
+                self._seen_probe_event_ids.popitem(last=False)
         if not self._start_pointer_seen:
             self._note_recognition_rejection(
                 "valid data pointer arrived before the startup pointer"
@@ -565,7 +602,7 @@ class ReceiverHistoryExtractor:
         while True:
             timeout = None
             if (
-                self.counter_mode == UTC_MODE
+                self.counter_mode in UTC_COUNTER_MODES
                 and self._next_utc_tick_epoch is not None
                 and not self._stop_requested.is_set()
             ):
@@ -617,11 +654,17 @@ class ReceiverHistoryExtractor:
                 f"Sniffing on interface: {describe_interface(self.iface)}",
                 flush=True,
             )
-        if self.counter_mode == UTC_MODE:
-            counter_schedule = (
-                "counter derived from UTC seconds "
-                f"(sample phase +{UTC_TICK_PHASE_SECONDS:g} seconds)"
-            )
+        if self.counter_mode in UTC_COUNTER_MODES:
+            if self.counter_mode == TRIGGERED_MDNS_MODE:
+                counter_schedule = (
+                    "absolute Unix UTC seconds modulo 16 "
+                    f"(sample phase +{UTC_TICK_PHASE_SECONDS:g} seconds)"
+                )
+            else:
+                counter_schedule = (
+                    "counter derived from shared UTC run start "
+                    f"(sample phase +{UTC_TICK_PHASE_SECONDS:g} seconds)"
+                )
         else:
             counter_schedule = (
                 "packet independent "
@@ -659,6 +702,14 @@ class ReceiverHistoryExtractor:
                 "Waiting for startup mDNS arm, then an ARP anchor and matching "
                 "confirmation. UTC counter values follow each shared UTC "
                 "second; keep both system clocks synchronized.",
+                flush=True,
+            )
+        elif self.counter_mode == TRIGGERED_MDNS_MODE:
+            print(
+                "Triggered mDNS mode uses native Windows DNS-SD probe queries; "
+                "each probe sequence is one pointer. No startup mDNS signal "
+                "is used. Keep both clocks synchronized and start receiver "
+                "first.",
                 flush=True,
             )
         else:
@@ -715,6 +766,12 @@ class ReceiverHistoryExtractor:
                 "rejected candidate(s).",
                 flush=True,
             )
+            if self.counter_mode == TRIGGERED_MDNS_MODE:
+                print(
+                    f"Repeated native probe frames ignored: "
+                    f"{self.duplicate_probe_count}.",
+                    flush=True,
+                )
             for reason, count in self.recognition_rejections.items():
                 print(f"  {count} frame(s): {reason}", flush=True)
             print(f"Latest buffer: {self.store.buffer_path}", flush=True)

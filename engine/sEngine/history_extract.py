@@ -10,6 +10,8 @@ from engine.periodic_counter import (
     PERIODIC_COUNTER_INTERVAL_SECONDS,
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
+    TRIGGERED_MDNS_MODE,
+    UTC_COUNTER_MODES,
     UTC_MODE,
     UTC_MAX_SAMPLE_PHASE_SECONDS,
     UTC_TICK_PHASE_SECONDS,
@@ -31,7 +33,12 @@ class ICDExtractor:
         on_start=None,
         counter_mode=PERIODIC_MODE,
     ):
-        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE):
+        if counter_mode not in (
+            PERIODIC_MODE,
+            SYNCED_CLOCK_MODE,
+            UTC_MODE,
+            TRIGGERED_MDNS_MODE,
+        ):
             raise ValueError(
                 "ICDExtractor supports legacy, synchronized clock, or UTC mode"
             )
@@ -50,7 +57,7 @@ class ICDExtractor:
         self._utc_start_tick_epoch = None
 
     def _process_periodic_sample(self, sample_no, clock_tick_epoch=None):
-        if self.counter_mode == UTC_MODE and clock_tick_epoch is not None:
+        if self.counter_mode in UTC_COUNTER_MODES and clock_tick_epoch is not None:
             if self._utc_start_tick_epoch is None:
                 raise RuntimeError("UTC start tick has not been initialized")
             counter = counter_for_utc_tick(
@@ -114,11 +121,17 @@ class ICDExtractor:
                 f"Pointer interface: {describe_interface(self.iface)}",
                 flush=True,
             )
-        if self.counter_mode == UTC_MODE:
-            counter_schedule = (
-                "counter derived from UTC seconds "
-                f"(sample phase +{UTC_TICK_PHASE_SECONDS:g} seconds)"
-            )
+        if self.counter_mode in UTC_COUNTER_MODES:
+            if self.counter_mode == TRIGGERED_MDNS_MODE:
+                counter_schedule = (
+                    "counter is absolute Unix UTC seconds modulo 16 "
+                    f"(sample phase +{UTC_TICK_PHASE_SECONDS:g} seconds)"
+                )
+            else:
+                counter_schedule = (
+                    "counter derived from the shared UTC run start "
+                    f"(sample phase +{UTC_TICK_PHASE_SECONDS:g} seconds)"
+                )
         else:
             counter_schedule = (
                 "packet independent "
@@ -135,15 +148,19 @@ class ICDExtractor:
             )
         print("Press Ctrl+C to stop and save results.\n", flush=True)
 
-        if self.counter_mode == UTC_MODE:
-            if isinstance(start_reference, bool) or not isinstance(
-                start_reference, int
-            ):
-                raise ValueError(
-                    "UTC mode requires the shared startup tick epoch"
-                )
-            self._utc_start_tick_epoch = start_reference
-            next_tick_epoch = start_reference
+        if self.counter_mode in UTC_COUNTER_MODES:
+            if self.counter_mode == TRIGGERED_MDNS_MODE:
+                self._utc_start_tick_epoch = 0
+                next_tick_epoch = utc_tick_epoch() + 1
+            else:
+                if isinstance(start_reference, bool) or not isinstance(
+                    start_reference, int
+                ):
+                    raise ValueError(
+                        "UTC mode requires the shared startup tick epoch"
+                    )
+                self._utc_start_tick_epoch = start_reference
+                next_tick_epoch = start_reference
             while self.matcher is None or not self.matcher.is_complete:
                 deadline = next_tick_epoch + UTC_TICK_PHASE_SECONDS
                 delay = deadline - time.time()
@@ -231,6 +248,13 @@ class ICDExtractor:
                 "Periodic-B UTC-derived mode: waiting for startup signaling, "
                 "then sampling against shared UTC-second ticks. Keep both "
                 "system clocks synchronized.",
+                flush=True,
+            )
+        elif self.counter_mode == TRIGGERED_MDNS_MODE:
+            print(
+                "Periodic-B triggered mDNS mode: no startup mDNS signal; "
+                "sampling absolute UTC seconds and triggering native DNS-SD "
+                "probes for matched windows.",
                 flush=True,
             )
         else:

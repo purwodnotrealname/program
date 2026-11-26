@@ -70,6 +70,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        signal_sender.close()
         extractor.save_json(OUTPUT_FILE)
         matcher.save_json(MATCH_OUTPUT_FILE)
         if matcher.is_complete:

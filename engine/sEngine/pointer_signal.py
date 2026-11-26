@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -14,6 +15,7 @@ from engine.arp_anchor import ARP_ANCHOR_FILTER, get_arp_anchor
 from engine.periodic_counter import (
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
+    TRIGGERED_MDNS_MODE,
     UTC_MODE,
     UTC_POINTER_SEND_MAX_PHASE_SECONDS,
     UTC_POINTER_SEND_MIN_PHASE_SECONDS,
@@ -22,6 +24,7 @@ from engine.periodic_counter import (
     next_minute_epoch,
     utc_tick_epoch,
 )
+from .native_mdns import NativeMdnsProbeSender
 
 MDNS_GROUP_IP = "224.0.0.251"
 MDNS_GROUP_MAC = "01:00:5e:00:00:fb"
@@ -45,7 +48,12 @@ class PointerSignalSender:
     ):
         if not message_bits or any(bit not in "01" for bit in message_bits):
             raise ValueError("message_bits must be a non-empty binary string")
-        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE):
+        if counter_mode not in (
+            PERIODIC_MODE,
+            SYNCED_CLOCK_MODE,
+            UTC_MODE,
+            TRIGGERED_MDNS_MODE,
+        ):
             raise ValueError(f"unsupported counter mode: {counter_mode!r}")
 
         self.iface = iface if iface is not None else conf.iface
@@ -55,11 +63,18 @@ class PointerSignalSender:
         self.source_ip = get_if_addr(self.iface)
         self.source_mac = get_if_hwaddr(self.iface)
         self.output_file = Path(output_file)
+        self._record_lock = threading.Lock()
+        self._native_probe_sender = None
 
         if self.source_ip == "0.0.0.0":
             raise RuntimeError(
                 f"Interface {self.iface!r} has no usable IPv4 address; "
                 "cannot send an mDNS pointer signal."
+            )
+        if self.counter_mode == TRIGGERED_MDNS_MODE:
+            self._native_probe_sender = NativeMdnsProbeSender(
+                iface=self.iface,
+                source_ip=self.source_ip,
             )
 
     def _build_packet(self, attempt, event_id):
@@ -115,17 +130,20 @@ class PointerSignalSender:
         )
 
     def _append_record(self, record):
-        self.output_file.parent.mkdir(parents=True, exist_ok=True)
-        if self.output_file.exists():
-            with self.output_file.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            records = data.get("signals", []) if isinstance(data, dict) else []
-        else:
-            records = []
+        with self._record_lock:
+            self.output_file.parent.mkdir(parents=True, exist_ok=True)
+            if self.output_file.exists():
+                with self.output_file.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                records = (
+                    data.get("signals", []) if isinstance(data, dict) else []
+                )
+            else:
+                records = []
 
-        records.append(record)
-        with self.output_file.open("w", encoding="utf-8") as f:
-            json.dump({"signals": records}, f, indent=2)
+            records.append(record)
+            with self.output_file.open("w", encoding="utf-8") as f:
+                json.dump({"signals": records}, f, indent=2)
 
     def _send_packet(self, packet, record):
         try:
@@ -139,6 +157,76 @@ class PointerSignalSender:
         self._append_record(record)
 
     def send_for_match(self, attempt):
+        if self.counter_mode == TRIGGERED_MDNS_MODE:
+            sample = attempt.get("sample")
+            tick_epoch = (
+                sample.get("clock_tick_epoch")
+                if isinstance(sample, dict)
+                else None
+            )
+            if isinstance(tick_epoch, bool) or not isinstance(tick_epoch, int):
+                raise ValueError(
+                    "Triggered mDNS pointer requires its matched UTC tick"
+                )
+
+            counter_bits = f"{attempt['counter_value']:04b}"
+            window_index = int(attempt["window_index"])
+            probe_label = (
+                f"hccp-{self.session_id}-w{window_index:04d}-"
+                f"t{tick_epoch}-c{counter_bits}"
+            )
+            service_name = f"{probe_label}._hcc-pointer._udp.local"
+            properties = [
+                ("app", "hcc-pointer-probe-v1"),
+                ("event", probe_label),
+                ("counter_bits", counter_bits),
+                ("tick_epoch", str(tick_epoch)),
+                ("window_index", str(window_index)),
+            ]
+            record = {
+                "event_id": probe_label,
+                "session_id": self.session_id,
+                "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+                "interface": self.iface,
+                "interface_index": self._native_probe_sender.interface_index,
+                "source_ip": self.source_ip,
+                "destination_ip": MDNS_GROUP_IP,
+                "destination_port": MDNS_PORT,
+                "counter_mode": self.counter_mode,
+                "signal_type": "native_probe",
+                "counter_identity": {
+                    "sample_no": attempt["sample_no"],
+                    "window_index": window_index,
+                    "tick_epoch": tick_epoch,
+                },
+                "counter_bits": counter_bits,
+                "window_bits": f"{attempt['window_value']:04b}",
+                "service_name": service_name,
+                "registration_status": "queued",
+                "match": attempt,
+            }
+            future = self._native_probe_sender.submit(service_name, properties)
+
+            def record_registration_result(completed_future):
+                try:
+                    record.update(completed_future.result())
+                    record["registration_status"] = "completed"
+                except Exception as exc:
+                    record["registration_status"] = "failed"
+                    record["registration_error"] = str(exc)
+                record["completed_at"] = datetime.now().isoformat(
+                    timespec="milliseconds"
+                )
+                self._append_record(record)
+
+            future.add_done_callback(record_registration_result)
+            print(
+                f"       - native mDNS probe sequence triggered for "
+                f"{probe_label}",
+                flush=True,
+            )
+            return
+
         if self.counter_mode == UTC_MODE:
             while True:
                 now = time.time()
@@ -190,6 +278,14 @@ class PointerSignalSender:
         )
 
     def send_start_signal(self):
+        if self.counter_mode == TRIGGERED_MDNS_MODE:
+            print(
+                "Triggered mDNS mode: no fabricated startup mDNS packet; "
+                "using the absolute UTC-second counter.",
+                flush=True,
+            )
+            return 0
+
         if self.counter_mode == SYNCED_CLOCK_MODE:
             print(
                 "Synchronized clock mode: sniffing for a broadcast ARP "
@@ -319,3 +415,8 @@ class PointerSignalSender:
             return start_at_epoch
         print(f"Startup pointer sent for {event_id}")
         return anchor_perf_counter
+
+    def close(self):
+        """Wait for native DNS-SD probe registrations to finish cleanup."""
+        if self._native_probe_sender is not None:
+            self._native_probe_sender.close()
