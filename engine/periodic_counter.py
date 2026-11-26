@@ -43,11 +43,16 @@ def next_utc_tick_epoch(timestamp=None):
     return utc_tick_epoch(timestamp) + 1
 
 
-def counter_for_utc_tick(tick_epoch):
-    """Derive the shared 4-bit counter value from an absolute UTC second."""
+def counter_for_utc_tick(tick_epoch, start_tick_epoch=0):
+    """Return the 4-bit value relative to this run's shared start tick."""
     if isinstance(tick_epoch, bool) or not isinstance(tick_epoch, int):
         raise TypeError("tick_epoch must be an integer UTC second")
-    return tick_epoch % len(PERIODIC_COUNTER_VALUES)
+    if (
+        isinstance(start_tick_epoch, bool)
+        or not isinstance(start_tick_epoch, int)
+    ):
+        raise TypeError("start_tick_epoch must be an integer UTC second")
+    return (tick_epoch - start_tick_epoch) % len(PERIODIC_COUNTER_VALUES)
 
 
 class PeriodicCounterState:

@@ -38,7 +38,7 @@ POINTER_FILTER = (
     f"(udp and dst port {MDNS_PORT} and dst host {MDNS_GROUP_IP})"
 )
 CAPTURE_FILTER = f"({ARP_ANCHOR_FILTER} or {POINTER_FILTER})"
-POINTER_IDLE_COUNTER_SAMPLES = 16
+POINTER_IDLE_COUNTER_SAMPLES = 32
 
 
 class ReceiverHistoryExtractor:
@@ -76,6 +76,7 @@ class ReceiverHistoryExtractor:
         self._next_periodic_tick = None
         self._next_periodic_tick_epoch = None
         self._next_utc_tick_epoch = None
+        self._utc_start_tick_epoch = None
         self._startup_armed = counter_mode == SYNCED_CLOCK_MODE
         self._start_pointer_seen = False
         self._pending_start = None
@@ -106,7 +107,12 @@ class ReceiverHistoryExtractor:
         """Buat satu nilai counter, simpan ke buffer, dan tulis ke log receiver."""
         self.sample_count += 1
         if self.counter_mode == UTC_MODE and clock_tick_epoch is not None:
-            counter = counter_for_utc_tick(clock_tick_epoch)
+            if self._utc_start_tick_epoch is None:
+                raise RuntimeError("UTC start tick has not been initialized")
+            counter = counter_for_utc_tick(
+                clock_tick_epoch,
+                self._utc_start_tick_epoch,
+            )
         else:
             counter = self._counter_state.next_value()
         counter_bits = f"{counter:0{OUTPUT_BITS}b}"
@@ -219,6 +225,7 @@ class ReceiverHistoryExtractor:
                 raise ValueError(
                     "UTC startup pointer has no shared start tick epoch"
                 )
+            self._utc_start_tick_epoch = start_at_epoch
             self._next_utc_tick_epoch = start_at_epoch
             self._next_periodic_tick = None
             self._next_periodic_tick_epoch = None
@@ -397,12 +404,17 @@ class ReceiverHistoryExtractor:
                     matching_ticks = [
                         tick_epoch
                         for tick_epoch in candidate_ticks
-                        if counter_for_utc_tick(tick_epoch)
-                        == advertised_counter
+                        if counter_for_utc_tick(
+                            tick_epoch,
+                            self._utc_start_tick_epoch,
+                        ) == advertised_counter
                     ]
                     if len(matching_ticks) == 1:
                         tick_epoch = matching_ticks[0]
-                        counter = counter_for_utc_tick(tick_epoch)
+                        counter = counter_for_utc_tick(
+                            tick_epoch,
+                            self._utc_start_tick_epoch,
+                        )
                         history_record = {
                             "session_id": self.session_id,
                             "sample_no": tick_epoch,
@@ -621,6 +633,11 @@ class ReceiverHistoryExtractor:
             )
         print(
             f"Counter mode: {self.counter_mode}, {counter_schedule}.",
+            flush=True,
+        )
+        print(
+            "No-pointer stop threshold: "
+            f"{POINTER_IDLE_COUNTER_SAMPLES} counter attempts.",
             flush=True,
         )
         print(f"Capture filter: {CAPTURE_FILTER}", flush=True)

@@ -47,10 +47,16 @@ class ICDExtractor:
         self.sample_count = 0
         self.t0_wallclock = None
         self._counter_state = PeriodicCounterState()
+        self._utc_start_tick_epoch = None
 
     def _process_periodic_sample(self, sample_no, clock_tick_epoch=None):
         if self.counter_mode == UTC_MODE and clock_tick_epoch is not None:
-            counter = counter_for_utc_tick(clock_tick_epoch)
+            if self._utc_start_tick_epoch is None:
+                raise RuntimeError("UTC start tick has not been initialized")
+            counter = counter_for_utc_tick(
+                clock_tick_epoch,
+                self._utc_start_tick_epoch,
+            )
         else:
             counter = self._counter_state.next_value()
         record = {
@@ -136,6 +142,7 @@ class ICDExtractor:
                 raise ValueError(
                     "UTC mode requires the shared startup tick epoch"
                 )
+            self._utc_start_tick_epoch = start_reference
             next_tick_epoch = start_reference
             while self.matcher is None or not self.matcher.is_complete:
                 deadline = next_tick_epoch + UTC_TICK_PHASE_SECONDS
@@ -148,6 +155,11 @@ class ICDExtractor:
                 if due_tick_epoch < next_tick_epoch:
                     continue
                 if due_tick_epoch > next_tick_epoch:
+                    if self.sample_count == 0:
+                        raise RuntimeError(
+                            "Shared UTC start tick was missed; restart both "
+                            "sender and receiver."
+                        )
                     skipped = due_tick_epoch - next_tick_epoch
                     print(
                         f"Skipped {skipped} late UTC counter tick(s).",
@@ -157,6 +169,11 @@ class ICDExtractor:
 
                 phase = now_epoch - int(now_epoch)
                 if phase > UTC_MAX_SAMPLE_PHASE_SECONDS:
+                    if self.sample_count == 0:
+                        raise RuntimeError(
+                            "First UTC counter tick was too late; restart both "
+                            "sender and receiver."
+                        )
                     print(
                         f"Skipped late UTC tick {next_tick_epoch}; "
                         f"sample phase was {phase:.3f}s.",

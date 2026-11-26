@@ -1,280 +1,154 @@
 {
   "interface": "\\Device\\NPF_{087FD757-EA4B-4CC8-B4E2-481BB410C89E}",
-  "counter_mode": "utc_clock",
+  "counter_mode": "synced_clock",
   "counter_interval_seconds": 1.0,
-  "initialization_time": "2026-11-26T13:48:03.716",
+  "initialization_time": "2026-11-26T14:11:07.601",
   "total_packets": null,
-  "total_counter_samples": 30,
+  "total_counter_samples": 16,
   "samples": [
     {
       "sample_no": 1,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:07.509",
-      "counter": 7,
-      "bit_value": 7,
-      "clock_tick_epoch": 1795672087
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:00.014",
+      "counter": 0,
+      "bit_value": 0,
+      "clock_tick_epoch": 1795673520
     },
     {
       "sample_no": 2,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:08.516",
-      "counter": 8,
-      "bit_value": 8,
-      "clock_tick_epoch": 1795672088
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:01.008",
+      "counter": 1,
+      "bit_value": 1,
+      "clock_tick_epoch": 1795673521
     },
     {
       "sample_no": 3,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:09.511",
-      "counter": 9,
-      "bit_value": 9,
-      "clock_tick_epoch": 1795672089
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:02.007",
+      "counter": 2,
+      "bit_value": 2,
+      "clock_tick_epoch": 1795673522
     },
     {
       "sample_no": 4,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:10.510",
-      "counter": 10,
-      "bit_value": 10,
-      "clock_tick_epoch": 1795672090
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:03.017",
+      "counter": 3,
+      "bit_value": 3,
+      "clock_tick_epoch": 1795673523
     },
     {
       "sample_no": 5,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:11.504",
-      "counter": 11,
-      "bit_value": 11,
-      "clock_tick_epoch": 1795672091
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:04.013",
+      "counter": 4,
+      "bit_value": 4,
+      "clock_tick_epoch": 1795673524
     },
     {
       "sample_no": 6,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:12.510",
-      "counter": 12,
-      "bit_value": 12,
-      "clock_tick_epoch": 1795672092
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:05.007",
+      "counter": 5,
+      "bit_value": 5,
+      "clock_tick_epoch": 1795673525
     },
     {
       "sample_no": 7,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:13.511",
-      "counter": 13,
-      "bit_value": 13,
-      "clock_tick_epoch": 1795672093
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:06.001",
+      "counter": 6,
+      "bit_value": 6,
+      "clock_tick_epoch": 1795673526
     },
     {
       "sample_no": 8,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:14.507",
-      "counter": 14,
-      "bit_value": 14,
-      "clock_tick_epoch": 1795672094
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:07.013",
+      "counter": 7,
+      "bit_value": 7,
+      "clock_tick_epoch": 1795673527
     },
     {
       "sample_no": 9,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:15.509",
-      "counter": 15,
-      "bit_value": 15,
-      "clock_tick_epoch": 1795672095
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:08.008",
+      "counter": 8,
+      "bit_value": 8,
+      "clock_tick_epoch": 1795673528
     },
     {
       "sample_no": 10,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:16.513",
-      "counter": 0,
-      "bit_value": 0,
-      "clock_tick_epoch": 1795672096
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:09.002",
+      "counter": 9,
+      "bit_value": 9,
+      "clock_tick_epoch": 1795673529
     },
     {
       "sample_no": 11,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:17.508",
-      "counter": 1,
-      "bit_value": 1,
-      "clock_tick_epoch": 1795672097
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:10.014",
+      "counter": 10,
+      "bit_value": 10,
+      "clock_tick_epoch": 1795673530
     },
     {
       "sample_no": 12,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:18.517",
-      "counter": 2,
-      "bit_value": 2,
-      "clock_tick_epoch": 1795672098
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:11.007",
+      "counter": 11,
+      "bit_value": 11,
+      "clock_tick_epoch": 1795673531
     },
     {
       "sample_no": 13,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:19.515",
-      "counter": 3,
-      "bit_value": 3,
-      "clock_tick_epoch": 1795672099
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:12.001",
+      "counter": 12,
+      "bit_value": 12,
+      "clock_tick_epoch": 1795673532
     },
     {
       "sample_no": 14,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:20.510",
-      "counter": 4,
-      "bit_value": 4,
-      "clock_tick_epoch": 1795672100
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:13.016",
+      "counter": 13,
+      "bit_value": 13,
+      "clock_tick_epoch": 1795673533
     },
     {
       "sample_no": 15,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:21.507",
-      "counter": 5,
-      "bit_value": 5,
-      "clock_tick_epoch": 1795672101
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:14.011",
+      "counter": 14,
+      "bit_value": 14,
+      "clock_tick_epoch": 1795673534
     },
     {
       "sample_no": 16,
       "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:22.505",
-      "counter": 6,
-      "bit_value": 6,
-      "clock_tick_epoch": 1795672102
-    },
-    {
-      "sample_no": 17,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:23.510",
-      "counter": 7,
-      "bit_value": 7,
-      "clock_tick_epoch": 1795672103
-    },
-    {
-      "sample_no": 18,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:24.517",
-      "counter": 8,
-      "bit_value": 8,
-      "clock_tick_epoch": 1795672104
-    },
-    {
-      "sample_no": 19,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:25.515",
-      "counter": 9,
-      "bit_value": 9,
-      "clock_tick_epoch": 1795672105
-    },
-    {
-      "sample_no": 20,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:26.511",
-      "counter": 10,
-      "bit_value": 10,
-      "clock_tick_epoch": 1795672106
-    },
-    {
-      "sample_no": 21,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:27.518",
-      "counter": 11,
-      "bit_value": 11,
-      "clock_tick_epoch": 1795672107
-    },
-    {
-      "sample_no": 22,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:28.501",
-      "counter": 12,
-      "bit_value": 12,
-      "clock_tick_epoch": 1795672108
-    },
-    {
-      "sample_no": 23,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:29.507",
-      "counter": 13,
-      "bit_value": 13,
-      "clock_tick_epoch": 1795672109
-    },
-    {
-      "sample_no": 24,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:30.513",
-      "counter": 14,
-      "bit_value": 14,
-      "clock_tick_epoch": 1795672110
-    },
-    {
-      "sample_no": 25,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:31.508",
+      "counter_mode": "synced_clock",
+      "timestamp": "2026-11-26T14:12:15.005",
       "counter": 15,
       "bit_value": 15,
-      "clock_tick_epoch": 1795672111
-    },
-    {
-      "sample_no": 26,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:32.501",
-      "counter": 0,
-      "bit_value": 0,
-      "clock_tick_epoch": 1795672112
-    },
-    {
-      "sample_no": 27,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:33.522",
-      "counter": 1,
-      "bit_value": 1,
-      "clock_tick_epoch": 1795672113
-    },
-    {
-      "sample_no": 28,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:34.507",
-      "counter": 2,
-      "bit_value": 2,
-      "clock_tick_epoch": 1795672114
-    },
-    {
-      "sample_no": 29,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:35.500",
-      "counter": 3,
-      "bit_value": 3,
-      "clock_tick_epoch": 1795672115
-    },
-    {
-      "sample_no": 30,
-      "protocol": "PERIODIC",
-      "counter_mode": "utc_clock",
-      "timestamp": "2026-11-26T13:48:36.512",
-      "counter": 4,
-      "bit_value": 4,
-      "clock_tick_epoch": 1795672116
+      "clock_tick_epoch": 1795673535
     }
   ]
 }
