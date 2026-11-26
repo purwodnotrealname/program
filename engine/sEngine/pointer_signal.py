@@ -14,7 +14,13 @@ from engine.arp_anchor import ARP_ANCHOR_FILTER, get_arp_anchor
 from engine.periodic_counter import (
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
+    UTC_MODE,
+    UTC_POINTER_SEND_MAX_PHASE_SECONDS,
+    UTC_POINTER_SEND_MIN_PHASE_SECONDS,
+    UTC_START_LEAD_TICKS,
+    UTC_TICK_PHASE_SECONDS,
     next_minute_epoch,
+    utc_tick_epoch,
 )
 
 MDNS_GROUP_IP = "224.0.0.251"
@@ -40,7 +46,7 @@ class PointerSignalSender:
     ):
         if not message_bits or any(bit not in "01" for bit in message_bits):
             raise ValueError("message_bits must be a non-empty binary string")
-        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE):
+        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE):
             raise ValueError(f"unsupported counter mode: {counter_mode!r}")
 
         self.iface = iface if iface is not None else conf.iface
@@ -62,7 +68,6 @@ class PointerSignalSender:
             )
 
     def _build_packet(self, attempt, event_id):
-        sample_no = attempt["sample_no"]
         window_index = attempt["window_index"]
         window_width = attempt["window_width"]
         window_bits = f"{attempt['window_value']:0{window_width}b}"
@@ -74,7 +79,6 @@ class PointerSignalSender:
             SIGNAL_SIGNATURE,
             f"event_id={event_id}",
             f"counter_mode={self.counter_mode}",
-            f"sample_no={sample_no}",
             f"counter_bits={sample_bits}",
         ]
         txt_fields.extend([
@@ -132,11 +136,28 @@ class PointerSignalSender:
         self._append_record(record)
 
     def send_for_match(self, attempt):
+        if self.counter_mode == UTC_MODE:
+            while True:
+                now = time.time()
+                phase = now - int(now)
+                if (
+                    UTC_POINTER_SEND_MIN_PHASE_SECONDS
+                    <= phase
+                    <= UTC_POINTER_SEND_MAX_PHASE_SECONDS
+                ):
+                    break
+                if phase < UTC_POINTER_SEND_MIN_PHASE_SECONDS:
+                    delay = UTC_POINTER_SEND_MIN_PHASE_SECONDS - phase
+                else:
+                    delay = (
+                        1.0
+                        - phase
+                        + UTC_POINTER_SEND_MIN_PHASE_SECONDS
+                    )
+                time.sleep(delay)
+
         sample_no = attempt["sample_no"]
-        event_id = (
-            f"s{self.session_id}-t{sample_no}"
-            f"-w{attempt['window_index']}"
-        )
+        event_id = f"s{self.session_id}-w{attempt['window_index']}"
         packet = self._build_packet(attempt, event_id)
         record = {
             "event_id": event_id,
@@ -236,6 +257,10 @@ class PointerSignalSender:
         start_at_epoch = None
         if self.counter_mode == SYNCED_CLOCK_MODE:
             start_at_epoch = next_minute_epoch(anchor_wallclock)
+        elif self.counter_mode == UTC_MODE:
+            start_at_epoch = (
+                utc_tick_epoch(anchor_wallclock) + UTC_START_LEAD_TICKS
+            )
 
         event_id = f"s{self.session_id}-periodic-start"
         start_fields = [
@@ -269,6 +294,16 @@ class PointerSignalSender:
         if start_at_epoch is not None:
             record["start_at_epoch"] = start_at_epoch
         self._send_packet(packet, record)
+        if self.counter_mode == UTC_MODE:
+            start_at = datetime.fromtimestamp(
+                start_at_epoch + UTC_TICK_PHASE_SECONDS
+            ).isoformat(timespec="milliseconds")
+            print(
+                f"Startup pointer sent for {event_id}; both UTC counters "
+                f"will begin at {start_at}.",
+                flush=True,
+            )
+            return start_at_epoch
         if start_at_epoch is not None:
             start_at = datetime.fromtimestamp(start_at_epoch).isoformat(
                 timespec="seconds"

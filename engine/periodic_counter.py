@@ -6,9 +6,22 @@ PERIODIC_COUNTER_INTERVAL_SECONDS = 1.0
 OUTPUT_BITS = 4
 PERIODIC_MODE = "periodic"
 SYNCED_CLOCK_MODE = "synced_clock"
+UTC_MODE = "utc_clock"
 HCC_MODE = "HCC"
-PERIODIC_COUNTER_MODES = (PERIODIC_MODE, SYNCED_CLOCK_MODE, HCC_MODE)
+PERIODIC_COUNTER_MODES = (
+    PERIODIC_MODE,
+    SYNCED_CLOCK_MODE,
+    UTC_MODE,
+    HCC_MODE,
+)
 PERIODIC_COUNTER_VALUES = tuple(range(2 ** OUTPUT_BITS))
+UTC_TICK_PHASE_SECONDS = 0.50
+UTC_MAX_SAMPLE_PHASE_SECONDS = 0.65
+UTC_START_LEAD_TICKS = 4
+UTC_POINTER_MIN_PHASE_SECONDS = 0.10
+UTC_POINTER_MAX_PHASE_SECONDS = 0.90
+UTC_POINTER_SEND_MIN_PHASE_SECONDS = 0.30
+UTC_POINTER_SEND_MAX_PHASE_SECONDS = 0.70
 
 
 def next_minute_epoch(timestamp=None):
@@ -16,6 +29,25 @@ def next_minute_epoch(timestamp=None):
     if timestamp is None:
         timestamp = time.time()
     return (int(timestamp) // 60 + 1) * 60
+
+
+def utc_tick_epoch(timestamp=None):
+    """Return the UTC second currently active after the configured tick phase."""
+    if timestamp is None:
+        timestamp = time.time()
+    return int(timestamp - UTC_TICK_PHASE_SECONDS)
+
+
+def next_utc_tick_epoch(timestamp=None):
+    """Return the next UTC second whose phased tick has not started yet."""
+    return utc_tick_epoch(timestamp) + 1
+
+
+def counter_for_utc_tick(tick_epoch):
+    """Derive the shared 4-bit counter value from an absolute UTC second."""
+    if isinstance(tick_epoch, bool) or not isinstance(tick_epoch, int):
+        raise TypeError("tick_epoch must be an integer UTC second")
+    return tick_epoch % len(PERIODIC_COUNTER_VALUES)
 
 
 class PeriodicCounterState:

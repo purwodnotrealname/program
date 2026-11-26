@@ -36,6 +36,7 @@ class ReceiverSecretBitsStore:
         pointer_record,
         history_record,
         buffer_snapshot=None,
+        empty_status="buffer_empty",
     ):
         """Hubungkan pointer ke counter terbaru dan tambahkan bit unik ke secret.
 
@@ -49,7 +50,7 @@ class ReceiverSecretBitsStore:
             "pointer_no": len(self.data["pointer_events"]) + 1,
             "pointer": pointer_record,
             "buffer_snapshot": list(buffer_snapshot or []),
-            "status": "buffer_empty",
+            "status": empty_status,
         }
 
         if history_record is not None:

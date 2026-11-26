@@ -1,6 +1,7 @@
 """Tangkap anchor ARP dan pointer Periodic-B untuk menghubungkan counter."""
 
 import json
+import math
 import queue
 import threading
 import time
@@ -17,8 +18,14 @@ from engine.periodic_counter import (
     PERIODIC_COUNTER_INTERVAL_SECONDS,
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
+    UTC_MODE,
+    UTC_POINTER_MAX_PHASE_SECONDS,
+    UTC_POINTER_MIN_PHASE_SECONDS,
+    UTC_TICK_PHASE_SECONDS,
     PeriodicCounterState,
+    counter_for_utc_tick,
     timestamp_now,
+    utc_tick_epoch,
 )
 from engine.pointer_protocol import MDNS_GROUP_IP, MDNS_PORT
 from .history_buffer import ReceiverHistoryStore
@@ -47,9 +54,9 @@ class ReceiverHistoryExtractor:
         counter_mode=PERIODIC_MODE,
     ):
         """Hubungkan recognizer, buffer, dan penyimpan secret untuk satu interface."""
-        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE):
+        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE):
             raise ValueError(
-                "Receiver supports legacy or synchronized clock mode"
+                "Receiver supports legacy, synchronized clock, or UTC mode"
             )
         self.iface = iface
         self.counter_mode = counter_mode
@@ -68,6 +75,7 @@ class ReceiverHistoryExtractor:
         self._counter_state = PeriodicCounterState()
         self._next_periodic_tick = None
         self._next_periodic_tick_epoch = None
+        self._next_utc_tick_epoch = None
         self._startup_armed = counter_mode == SYNCED_CLOCK_MODE
         self._start_pointer_seen = False
         self._pending_start = None
@@ -88,13 +96,19 @@ class ReceiverHistoryExtractor:
                 timespec="milliseconds"
             )
         except (AttributeError, TypeError, ValueError, OverflowError, OSError):
+            capture_timestamp = time.time()
             wallclock = datetime.now().isoformat(timespec="milliseconds")
-        self._queue.put((packet, wallclock, arrival_perf_counter))
+        self._queue.put(
+            (packet, wallclock, arrival_perf_counter, capture_timestamp)
+        )
 
     def _record_periodic_value(self, clock_tick_epoch=None):
         """Buat satu nilai counter, simpan ke buffer, dan tulis ke log receiver."""
         self.sample_count += 1
-        counter = self._counter_state.next_value()
+        if self.counter_mode == UTC_MODE and clock_tick_epoch is not None:
+            counter = counter_for_utc_tick(clock_tick_epoch)
+        else:
+            counter = self._counter_state.next_value()
         counter_bits = f"{counter:0{OUTPUT_BITS}b}"
         record = {
             "session_id": self.session_id,
@@ -116,8 +130,38 @@ class ReceiverHistoryExtractor:
             flush=True,
         )
 
-    def _emit_due_periodic_values(self, now_perf_counter):
+    def _emit_due_periodic_values(self, now_perf_counter, now_epoch=None):
         """Keluarkan sampel yang jadwal intervalnya sudah tiba."""
+        if self.counter_mode == UTC_MODE:
+            if (
+                self._next_utc_tick_epoch is None
+                or self._stop_requested.is_set()
+            ):
+                return
+            if now_epoch is None:
+                now_epoch = time.time()
+            due_tick_epoch = utc_tick_epoch(now_epoch)
+            while (
+                self._next_utc_tick_epoch <= due_tick_epoch
+                and not self._stop_requested.is_set()
+            ):
+                tick_epoch = self._next_utc_tick_epoch
+                self._record_periodic_value(clock_tick_epoch=tick_epoch)
+                self._next_utc_tick_epoch += 1
+                if (
+                    self._last_pointer_sample_count is not None
+                    and self.sample_count - self._last_pointer_sample_count
+                    >= POINTER_IDLE_COUNTER_SAMPLES
+                ):
+                    print(
+                        f"No data pointer received for "
+                        f"{POINTER_IDLE_COUNTER_SAMPLES} counter attempts; "
+                        "stopping receiver.",
+                        flush=True,
+                    )
+                    self._stop_requested.set()
+            return
+
         while (
             self._next_periodic_tick is not None
             and now_perf_counter >= self._next_periodic_tick
@@ -167,6 +211,17 @@ class ReceiverHistoryExtractor:
                 0.0, start_at_epoch - time.time()
             )
             self._next_periodic_tick_epoch = start_at_epoch
+        elif self.counter_mode == UTC_MODE:
+            if (
+                isinstance(start_at_epoch, bool)
+                or not isinstance(start_at_epoch, int)
+            ):
+                raise ValueError(
+                    "UTC startup pointer has no shared start tick epoch"
+                )
+            self._next_utc_tick_epoch = start_at_epoch
+            self._next_periodic_tick = None
+            self._next_periodic_tick_epoch = None
         else:
             self._next_periodic_tick = anchor_perf_counter
             self._next_periodic_tick_epoch = None
@@ -185,7 +240,16 @@ class ReceiverHistoryExtractor:
         if start_at_epoch is not None:
             start_event["start_at_epoch"] = start_at_epoch
         self.store.append_event(start_event)
-        if start_at_epoch is None:
+        if self.counter_mode == UTC_MODE:
+            start_at = datetime.fromtimestamp(
+                start_at_epoch + UTC_TICK_PHASE_SECONDS
+            ).isoformat(timespec="milliseconds")
+            print(
+                "Startup pointer matched its ARP anchor; both UTC counters "
+                f"will start at {start_at}.",
+                flush=True,
+            )
+        elif start_at_epoch is None:
             print(
                 "Periodic-B startup pointer matched the observed ARP anchor; "
                 "counter started.",
@@ -200,7 +264,7 @@ class ReceiverHistoryExtractor:
                 f"will start at {start_at}.",
                 flush=True,
             )
-        self._emit_due_periodic_values(now_perf_counter)
+        self._emit_due_periodic_values(now_perf_counter, time.time())
 
     def _record_arm_pointer(self, pointer_record, timestamp):
         """Arm the receiver so only later ARP frames can anchor this run."""
@@ -276,31 +340,104 @@ class ReceiverHistoryExtractor:
         return True
 
     def _parse_start_at_epoch(self, pointer_record):
-        """Validate the shared minute boundary carried by a synced start pointer."""
-        if self.counter_mode != SYNCED_CLOCK_MODE:
+        """Validate the shared start epoch carried by a startup pointer."""
+        if self.counter_mode not in (SYNCED_CLOCK_MODE, UTC_MODE):
             return None
         value = pointer_record.get("start_at_epoch")
         try:
             start_at_epoch = int(value)
         except (TypeError, ValueError):
             raise ValueError(
-                "synchronized startup pointer has no valid start_at_epoch"
+                "startup pointer has no valid start_at_epoch"
             ) from None
-        if str(start_at_epoch) != str(value) or start_at_epoch % 60 != 0:
+        if str(start_at_epoch) != str(value):
+            raise ValueError("startup start_at_epoch must be an integer")
+        if (
+            self.counter_mode == SYNCED_CLOCK_MODE
+            and start_at_epoch % 60 != 0
+        ):
             raise ValueError(
                 "synchronized start_at_epoch must be an integer minute boundary"
             )
+        if (
+            self.counter_mode == UTC_MODE
+            and start_at_epoch <= utc_tick_epoch()
+        ):
+            raise ValueError(
+                "UTC startup tick has already started; clocks may be out of sync"
+            )
         return start_at_epoch
 
-    def _record_pointer(self, pointer_record, timestamp):
-        """Pasangkan pointer data dengan counter terbaru, lalu tambah bit ke secret."""
+    def _record_pointer(self, pointer_record, timestamp, capture_epoch=None):
+        """Match a pointer to the local counter for its UTC tick or latest sample."""
         pointer_record["timestamp"] = timestamp
         buffer_snapshot = self.store.newest_first
-        history_record = self.store.latest
+        empty_status = "buffer_empty"
+        if self.counter_mode == UTC_MODE:
+            if capture_epoch is None:
+                capture_epoch = time.time()
+            phase = capture_epoch - math.floor(capture_epoch)
+            if UTC_POINTER_MIN_PHASE_SECONDS <= phase <= UTC_POINTER_MAX_PHASE_SECONDS:
+                arrival_tick_epoch = math.floor(capture_epoch)
+                advertised_bits = pointer_record.get("counter_bits")
+                if (
+                    not isinstance(advertised_bits, str)
+                    or len(advertised_bits) != OUTPUT_BITS
+                    or any(bit not in "01" for bit in advertised_bits)
+                ):
+                    history_record = None
+                    empty_status = "missing_or_invalid_counter_bits"
+                else:
+                    advertised_counter = int(advertised_bits, 2)
+                    candidate_ticks = (
+                        arrival_tick_epoch - 1,
+                        arrival_tick_epoch,
+                        arrival_tick_epoch + 1,
+                    )
+                    matching_ticks = [
+                        tick_epoch
+                        for tick_epoch in candidate_ticks
+                        if counter_for_utc_tick(tick_epoch)
+                        == advertised_counter
+                    ]
+                    if len(matching_ticks) == 1:
+                        tick_epoch = matching_ticks[0]
+                        counter = counter_for_utc_tick(tick_epoch)
+                        history_record = {
+                            "session_id": self.session_id,
+                            "sample_no": tick_epoch,
+                            "protocol": "PERIODIC",
+                            "counter_mode": self.counter_mode,
+                            "timestamp": timestamp,
+                            "counter": counter,
+                            "counter_bits": f"{counter:0{OUTPUT_BITS}b}",
+                            "clock_tick_epoch": tick_epoch,
+                        }
+                        pointer_record["utc_tick_epoch"] = tick_epoch
+                        pointer_record["utc_tick_offset_seconds"] = (
+                            tick_epoch - arrival_tick_epoch
+                        )
+                    else:
+                        history_record = None
+                        empty_status = "utc_counter_does_not_match_arrival_time"
+            else:
+                history_record = None
+                empty_status = "outside_utc_pointer_window"
+                self._note_recognition_rejection(
+                    "UTC pointer arrived outside the expected tick window"
+                )
+            if history_record is None and empty_status != "outside_utc_pointer_window":
+                self._note_recognition_rejection(
+                    f"UTC pointer sample could not be matched: {empty_status}"
+                )
+        else:
+            history_record = self.store.latest
+
         pointer_event = self.secret_bits_store.record_pointer(
             pointer_record,
             history_record,
             buffer_snapshot=buffer_snapshot,
+            empty_status=empty_status,
         )
         self.store.append_event({
             "event_type": "pointer",
@@ -315,7 +452,7 @@ class ReceiverHistoryExtractor:
             "counter": pointer_event.get("counter"),
             "counter_bits": pointer_event.get("bits"),
         })
-        if history_record is not None:
+        if history_record is not None and self.counter_mode != UTC_MODE:
             self.store.pop_latest()
         self._last_pointer_sample_count = self.sample_count
         print(
@@ -335,9 +472,15 @@ class ReceiverHistoryExtractor:
         if count == 1:
             print(f"Captured packet ignored: {reason}.", flush=True)
 
-    def _process_packet(self, packet, timestamp, arrival_perf_counter):
+    def _process_packet(
+        self,
+        packet,
+        timestamp,
+        arrival_perf_counter,
+        capture_epoch=None,
+    ):
         """Observe ARP anchors and process startup/data pointers in order."""
-        self._emit_due_periodic_values(arrival_perf_counter)
+        self._emit_due_periodic_values(arrival_perf_counter, capture_epoch)
         if self._stop_requested.is_set():
             return
         if self._observe_arp_anchor(
@@ -407,13 +550,24 @@ class ReceiverHistoryExtractor:
                 "valid data pointer arrived before the startup pointer"
             )
             return
-        self._record_pointer(pointer_record, timestamp)
+        self._record_pointer(pointer_record, timestamp, capture_epoch)
 
     def _process_loop(self):
         """Proses frame antrean dan timer counter pada satu worker terurut."""
         while True:
             timeout = None
             if (
+                self.counter_mode == UTC_MODE
+                and self._next_utc_tick_epoch is not None
+                and not self._stop_requested.is_set()
+            ):
+                timeout = max(
+                    0.0,
+                    self._next_utc_tick_epoch
+                    + UTC_TICK_PHASE_SECONDS
+                    - time.time(),
+                )
+            elif (
                 self._next_periodic_tick is not None
                 and not self._stop_requested.is_set()
             ):
@@ -425,18 +579,21 @@ class ReceiverHistoryExtractor:
                 item = self._queue.get(timeout=timeout)
             except queue.Empty:
                 if not self._stop_requested.is_set():
-                    self._emit_due_periodic_values(time.perf_counter())
+                    self._emit_due_periodic_values(
+                        time.perf_counter(), time.time()
+                    )
                 continue
 
             try:
                 if item is None:
                     break
-                packet, timestamp, arrival_perf_counter = item
+                packet, timestamp, arrival_perf_counter, capture_epoch = item
                 try:
                     self._process_packet(
                         packet,
                         timestamp,
                         arrival_perf_counter,
+                        capture_epoch,
                     )
                 except Exception as exc:
                     print(f"Packet processing failed: {exc}", flush=True)
@@ -452,9 +609,18 @@ class ReceiverHistoryExtractor:
                 f"Sniffing on interface: {describe_interface(self.iface)}",
                 flush=True,
             )
+        if self.counter_mode == UTC_MODE:
+            counter_schedule = (
+                "counter derived from UTC seconds "
+                f"(sample phase +{UTC_TICK_PHASE_SECONDS:g} seconds)"
+            )
+        else:
+            counter_schedule = (
+                "packet independent "
+                f"(interval {PERIODIC_COUNTER_INTERVAL_SECONDS:g} seconds)"
+            )
         print(
-            f"Counter mode: {self.counter_mode}, packet independent "
-            f"(interval {PERIODIC_COUNTER_INTERVAL_SECONDS:g} seconds).",
+            f"Counter mode: {self.counter_mode}, {counter_schedule}.",
             flush=True,
         )
         print(f"Capture filter: {CAPTURE_FILTER}", flush=True)
@@ -473,6 +639,13 @@ class ReceiverHistoryExtractor:
                 "synchronized before communication; sampling starts at the "
                 "next minute boundary after ARP. Start the receiver before "
                 "the sender so it can capture the ARP anchor.",
+                flush=True,
+            )
+        elif self.counter_mode == UTC_MODE:
+            print(
+                "Waiting for startup mDNS arm, then an ARP anchor and matching "
+                "confirmation. UTC counter values follow each shared UTC "
+                "second; keep both system clocks synchronized.",
                 flush=True,
             )
         else:

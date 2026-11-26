@@ -10,8 +10,13 @@ from engine.periodic_counter import (
     PERIODIC_COUNTER_INTERVAL_SECONDS,
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
+    UTC_MODE,
+    UTC_MAX_SAMPLE_PHASE_SECONDS,
+    UTC_TICK_PHASE_SECONDS,
     PeriodicCounterState,
+    counter_for_utc_tick,
     timestamp_now,
+    utc_tick_epoch,
 )
 
 
@@ -26,9 +31,9 @@ class ICDExtractor:
         on_start=None,
         counter_mode=PERIODIC_MODE,
     ):
-        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE):
+        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE):
             raise ValueError(
-                "ICDExtractor supports legacy or synchronized clock mode"
+                "ICDExtractor supports legacy, synchronized clock, or UTC mode"
             )
         if not callable(on_start):
             raise ValueError("Periodic-B requires an on_start pointer callback")
@@ -44,7 +49,10 @@ class ICDExtractor:
         self._counter_state = PeriodicCounterState()
 
     def _process_periodic_sample(self, sample_no, clock_tick_epoch=None):
-        counter = self._counter_state.next_value()
+        if self.counter_mode == UTC_MODE and clock_tick_epoch is not None:
+            counter = counter_for_utc_tick(clock_tick_epoch)
+        else:
+            counter = self._counter_state.next_value()
         record = {
             "sample_no": sample_no,
             "protocol": "PERIODIC",
@@ -100,9 +108,18 @@ class ICDExtractor:
                 f"Pointer interface: {describe_interface(self.iface)}",
                 flush=True,
             )
+        if self.counter_mode == UTC_MODE:
+            counter_schedule = (
+                "counter derived from UTC seconds "
+                f"(sample phase +{UTC_TICK_PHASE_SECONDS:g} seconds)"
+            )
+        else:
+            counter_schedule = (
+                "packet independent "
+                f"(interval {PERIODIC_COUNTER_INTERVAL_SECONDS:g} seconds)"
+            )
         print(
-            f"Counter mode: {self.counter_mode}, packet independent "
-            f"(interval {PERIODIC_COUNTER_INTERVAL_SECONDS:g} seconds).",
+            f"Counter mode: {self.counter_mode}, {counter_schedule}.",
             flush=True,
         )
         if self.matcher is not None:
@@ -111,6 +128,49 @@ class ICDExtractor:
                 flush=True,
             )
         print("Press Ctrl+C to stop and save results.\n", flush=True)
+
+        if self.counter_mode == UTC_MODE:
+            if isinstance(start_reference, bool) or not isinstance(
+                start_reference, int
+            ):
+                raise ValueError(
+                    "UTC mode requires the shared startup tick epoch"
+                )
+            next_tick_epoch = start_reference
+            while self.matcher is None or not self.matcher.is_complete:
+                deadline = next_tick_epoch + UTC_TICK_PHASE_SECONDS
+                delay = deadline - time.time()
+                if delay > 0:
+                    time.sleep(delay)
+
+                now_epoch = time.time()
+                due_tick_epoch = utc_tick_epoch(now_epoch)
+                if due_tick_epoch < next_tick_epoch:
+                    continue
+                if due_tick_epoch > next_tick_epoch:
+                    skipped = due_tick_epoch - next_tick_epoch
+                    print(
+                        f"Skipped {skipped} late UTC counter tick(s).",
+                        flush=True,
+                    )
+                    next_tick_epoch = due_tick_epoch
+
+                phase = now_epoch - int(now_epoch)
+                if phase > UTC_MAX_SAMPLE_PHASE_SECONDS:
+                    print(
+                        f"Skipped late UTC tick {next_tick_epoch}; "
+                        f"sample phase was {phase:.3f}s.",
+                        flush=True,
+                    )
+                    next_tick_epoch += 1
+                    continue
+
+                self._process_periodic_sample(
+                    self.sample_count + 1,
+                    clock_tick_epoch=next_tick_epoch,
+                )
+                next_tick_epoch += 1
+            return
 
         next_tick_epoch = None
         if self.counter_mode == SYNCED_CLOCK_MODE:
@@ -147,6 +207,13 @@ class ICDExtractor:
             print(
                 "Periodic-B synchronized clock mode: sniffing for a broadcast "
                 "ARP directly, then confirming its shared start time.",
+                flush=True,
+            )
+        elif self.counter_mode == UTC_MODE:
+            print(
+                "Periodic-B UTC-derived mode: waiting for startup signaling, "
+                "then sampling against shared UTC-second ticks. Keep both "
+                "system clocks synchronized.",
                 flush=True,
             )
         else:

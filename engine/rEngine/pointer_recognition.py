@@ -86,6 +86,7 @@ class PointerRecognizer:
             key: pointer_metadata[key]
             for key in (
                 "counter_mode",
+                "counter_bits",
                 "signal_type",
                 "anchor_id",
                 "start_at_epoch",
@@ -121,6 +122,7 @@ class PointerRecognizer:
                 signal_type = cls._field_value(fields, "signal_type")
                 anchor_id = cls._field_value(fields, "anchor_id")
                 start_at_epoch = cls._field_value(fields, "start_at_epoch")
+                counter_bits = cls._field_value(fields, "counter_bits")
                 if counter_mode is not None:
                     metadata["counter_mode"] = counter_mode
                 if signal_type is not None:
@@ -129,6 +131,8 @@ class PointerRecognizer:
                     metadata["anchor_id"] = anchor_id
                 if start_at_epoch is not None:
                     metadata["start_at_epoch"] = start_at_epoch
+                if counter_bits is not None:
+                    metadata["counter_bits"] = counter_bits
                 return metadata
 
             answer = answer.payload

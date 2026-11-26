@@ -2,7 +2,7 @@
 
 from scapy.all import conf, get_if_list
 
-from engine.periodic_counter import PERIODIC_MODE, SYNCED_CLOCK_MODE
+from engine.periodic_counter import PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE
 
 
 def list_interfaces():
@@ -58,6 +58,10 @@ def choose_counter_mode():
         "then start at the next minute boundary; sync both clocks and start "
         "receiver first"
     )
+    print(
+        "  [3] UTC-derived: counter is the Unix UTC second modulo 16; "
+        "keep both system clocks synchronized and start receiver first"
+    )
     while True:
         choice = input(
             "Select counter mode (sender and receiver must choose the same): "
@@ -66,4 +70,6 @@ def choose_counter_mode():
             return PERIODIC_MODE
         if choice == "2":
             return SYNCED_CLOCK_MODE
-        print("Invalid selection. Enter 1 or 2.")
+        if choice == "3":
+            return UTC_MODE
+        print("Invalid selection. Enter 1, 2, or 3.")
