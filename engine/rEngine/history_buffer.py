@@ -11,6 +11,7 @@ from pathlib import Path
 
 from engine.periodic_counter import (
     OUTPUT_BITS,
+    GROUP_MODE,
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
     UTC_MODE,
@@ -31,7 +32,12 @@ class ReceiverHistoryStore:
         counter_mode=PERIODIC_MODE,
     ):
         """Pulihkan buffer periodic yang tersimpan atau siapkan buffer baru."""
-        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE):
+        if counter_mode not in (
+            PERIODIC_MODE,
+            SYNCED_CLOCK_MODE,
+            UTC_MODE,
+            GROUP_MODE,
+        ):
             raise ValueError(f"unsupported counter mode: {counter_mode!r}")
         self.buffer_path = Path(buffer_path)
         self.log_path = Path(log_path)

@@ -85,12 +85,25 @@ class PointerRecognizer:
         record.update({
             key: pointer_metadata[key]
             for key in (
+                "event_id",
                 "counter_mode",
                 "counter_bits",
                 "tick_epoch",
                 "signal_type",
                 "anchor_id",
                 "start_at_epoch",
+                "sender_session_id",
+                "target_session_id",
+                "group_index",
+                "group_attempt",
+                "group_window_index",
+                "group_window_count",
+                "group_end",
+                "group_start_tick_epoch",
+                "window_index",
+                "window_bits",
+                "compared_bits",
+                "message_bit_length",
             )
             if key in pointer_metadata
         })
@@ -125,6 +138,33 @@ class PointerRecognizer:
                 start_at_epoch = cls._field_value(fields, "start_at_epoch")
                 counter_bits = cls._field_value(fields, "counter_bits")
                 tick_epoch = cls._field_value(fields, "tick_epoch")
+                event_id = cls._field_value(fields, "event_id")
+                sender_session_id = cls._field_value(
+                    fields, "sender_session_id"
+                )
+                target_session_id = cls._field_value(
+                    fields, "target_session_id"
+                )
+                group_index = cls._field_value(fields, "group_index")
+                group_attempt = cls._field_value(fields, "group_attempt")
+                group_window_index = cls._field_value(
+                    fields, "group_window_index"
+                )
+                group_window_count = cls._field_value(
+                    fields, "group_window_count"
+                )
+                group_end = cls._field_value(fields, "group_end")
+                group_start_tick_epoch = cls._field_value(
+                    fields, "group_start_tick_epoch"
+                )
+                window_index = cls._field_value(fields, "window_index")
+                window_bits = cls._field_value(fields, "window_bits")
+                compared_bits = cls._field_value(fields, "compared_bits")
+                message_bit_length = cls._field_value(
+                    fields, "message_bit_length"
+                )
+                if event_id is not None:
+                    metadata["event_id"] = event_id
                 if counter_mode is not None:
                     metadata["counter_mode"] = counter_mode
                 if signal_type is not None:
@@ -137,6 +177,22 @@ class PointerRecognizer:
                     metadata["counter_bits"] = counter_bits
                 if tick_epoch is not None:
                     metadata["tick_epoch"] = tick_epoch
+                for key, value in (
+                    ("sender_session_id", sender_session_id),
+                    ("target_session_id", target_session_id),
+                    ("group_index", group_index),
+                    ("group_attempt", group_attempt),
+                    ("group_window_index", group_window_index),
+                    ("group_window_count", group_window_count),
+                    ("group_end", group_end),
+                    ("group_start_tick_epoch", group_start_tick_epoch),
+                    ("window_index", window_index),
+                    ("window_bits", window_bits),
+                    ("compared_bits", compared_bits),
+                    ("message_bit_length", message_bit_length),
+                ):
+                    if value is not None:
+                        metadata[key] = value
                 return metadata
 
             answer = answer.payload

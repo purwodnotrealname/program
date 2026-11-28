@@ -7,11 +7,18 @@ OUTPUT_BITS = 4
 PERIODIC_MODE = "periodic"
 SYNCED_CLOCK_MODE = "synced_clock"
 UTC_MODE = "utc_clock"
+GROUP_MODE = "utc_group"
+UTC_COUNTER_MODES = (UTC_MODE, GROUP_MODE)
+GROUP_BITS = 100
+GROUP_WINDOW_COUNT = GROUP_BITS // OUTPUT_BITS
+GROUP_ACK_TIMEOUT_SECONDS = 2
+GROUP_RETRY_TIMEOUT_SECONDS = 16
+GROUP_RETRY_SILENCE_SECONDS = GROUP_RETRY_TIMEOUT_SECONDS + 1
 HCC_MODE = "HCC"
 PERIODIC_COUNTER_MODES = (
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
-    UTC_MODE,
+    *UTC_COUNTER_MODES,
     HCC_MODE,
 )
 PERIODIC_COUNTER_VALUES = tuple(range(2 ** OUTPUT_BITS))
@@ -20,6 +27,15 @@ UTC_MAX_SAMPLE_PHASE_SECONDS = 0.65
 UTC_START_LEAD_TICKS = 4
 UTC_POINTER_SEND_MIN_PHASE_SECONDS = 0.30
 UTC_POINTER_SEND_MAX_PHASE_SECONDS = 0.70
+
+
+def next_counter_zero_tick_epoch(start_tick_epoch, timestamp=None):
+    """Return the next future UTC tick whose run-relative counter is zero."""
+    if timestamp is None:
+        timestamp = time.time()
+    tick_epoch = next_utc_tick_epoch(timestamp)
+    remainder = (tick_epoch - start_tick_epoch) % len(PERIODIC_COUNTER_VALUES)
+    return tick_epoch + (-remainder) % len(PERIODIC_COUNTER_VALUES)
 
 
 def next_minute_epoch(timestamp=None):

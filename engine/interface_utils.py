@@ -2,7 +2,12 @@
 
 from scapy.all import conf, get_if_list
 
-from engine.periodic_counter import PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE
+from engine.periodic_counter import (
+    GROUP_MODE,
+    PERIODIC_MODE,
+    SYNCED_CLOCK_MODE,
+    UTC_MODE,
+)
 
 
 def list_interfaces():
@@ -62,6 +67,12 @@ def choose_counter_mode():
         "  [3] UTC-derived: counter is the Unix UTC second modulo 16; "
         "keep both system clocks synchronized and start receiver first"
     )
+    print(
+        "  [4] UTC-derived + groups of 100 bits; receiver confirms each "
+        "group within 2 seconds. Without confirmation, sender stays silent "
+        "for over 16 seconds, then syncs to the original UTC counter 0000 "
+        "before replay; start receiver first and sync both clocks"
+    )
     while True:
         choice = input(
             "Select counter mode (sender and receiver must choose the same): "
@@ -72,4 +83,6 @@ def choose_counter_mode():
             return SYNCED_CLOCK_MODE
         if choice == "3":
             return UTC_MODE
-        print("Invalid selection. Enter 1, 2, or 3.")
+        if choice == "4":
+            return GROUP_MODE
+        print("Invalid selection. Enter 1, 2, 3, or 4.")

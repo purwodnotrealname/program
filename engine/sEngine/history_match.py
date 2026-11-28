@@ -48,6 +48,7 @@ class SequentialBitMatcher:
         self.pointer = 0          # index window 
         self.attempts = []        # history (matched & unmatched)
         self.match_count = 0      # Matched window count
+        self._matched_window_indices = set()
 
     @property
     def is_complete(self):
@@ -87,10 +88,22 @@ class SequentialBitMatcher:
         self.attempts.append(attempt)
 
         if matched:
-            self.match_count += 1
+            if self.pointer not in self._matched_window_indices:
+                self.match_count += 1
+                self._matched_window_indices.add(self.pointer)
             self.pointer += 1
 
         return attempt
+
+    def reset_to(self, window_index):
+        """Resume matching at a window boundary, preserving attempt history."""
+        if (
+            isinstance(window_index, bool)
+            or not isinstance(window_index, int)
+            or not 0 <= window_index <= len(self.windows)
+        ):
+            raise ValueError("window_index must identify a message window")
+        self.pointer = window_index
 
     def summary(self):
         return {

@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -8,13 +9,16 @@ from scapy.all import conf, get_if_addr, get_if_hwaddr, sendp
 from scapy.layers.dns import DNS, DNSRR
 from scapy.layers.inet import IP, UDP
 from scapy.layers.l2 import Ether
-from scapy.sendrecv import sniff
+from scapy.sendrecv import AsyncSniffer, sniff
 
 from engine.arp_anchor import ARP_ANCHOR_FILTER, get_arp_anchor
 from engine.periodic_counter import (
+    GROUP_ACK_TIMEOUT_SECONDS,
+    GROUP_MODE,
+    GROUP_RETRY_SILENCE_SECONDS,
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
-    UTC_MODE,
+    UTC_COUNTER_MODES,
     UTC_POINTER_SEND_MAX_PHASE_SECONDS,
     UTC_POINTER_SEND_MIN_PHASE_SECONDS,
     UTC_START_LEAD_TICKS,
@@ -45,7 +49,11 @@ class PointerSignalSender:
     ):
         if not message_bits or any(bit not in "01" for bit in message_bits):
             raise ValueError("message_bits must be a non-empty binary string")
-        if counter_mode not in (PERIODIC_MODE, SYNCED_CLOCK_MODE, UTC_MODE):
+        if counter_mode not in (
+            PERIODIC_MODE,
+            SYNCED_CLOCK_MODE,
+            *UTC_COUNTER_MODES,
+        ):
             raise ValueError(f"unsupported counter mode: {counter_mode!r}")
 
         self.iface = iface if iface is not None else conf.iface
@@ -55,6 +63,10 @@ class PointerSignalSender:
         self.source_ip = get_if_addr(self.iface)
         self.source_mac = get_if_hwaddr(self.iface)
         self.output_file = Path(output_file)
+        self._group_ack_events = {}
+        self._group_ack_lock = threading.Lock()
+        self._group_ack_sniffer = None
+        self._active_group_ack_key = None
 
         if self.source_ip == "0.0.0.0":
             raise RuntimeError(
@@ -82,7 +94,17 @@ class PointerSignalSender:
             f"compared_bits={compared_bits}",
             f"message_bit_length={len(self.message_bits)}",
         ])
-        if self.counter_mode == UTC_MODE:
+        if self.counter_mode == GROUP_MODE:
+            txt_fields.extend([
+                f"sender_session_id={self.session_id}",
+                f"group_index={attempt['group_index']}",
+                f"group_attempt={attempt['group_attempt']}",
+                f"group_window_index={attempt['group_window_index']}",
+                f"group_window_count={attempt['group_window_count']}",
+                f"group_end={int(attempt['group_end'])}",
+                f"group_start_tick_epoch={attempt['group_start_tick_epoch']}",
+            ])
+        if self.counter_mode in UTC_COUNTER_MODES:
             sample = attempt.get("sample")
             tick_epoch = (
                 sample.get("clock_tick_epoch")
@@ -138,8 +160,147 @@ class PointerSignalSender:
 
         self._append_record(record)
 
+    def _observe_group_ack(self, packet):
+        """Wake the sender only for a group ACK addressed to this run."""
+        if not (
+            packet.haslayer(IP)
+            and packet.haslayer(UDP)
+            and packet.haslayer(DNS)
+            and packet[IP].src != self.source_ip
+            and packet[IP].dst == MDNS_GROUP_IP
+            and packet[UDP].sport == MDNS_PORT
+            and packet[UDP].dport == MDNS_PORT
+        ):
+            return
+
+        dns = packet[DNS]
+        if not dns.qr or not dns.aa or not dns.ancount:
+            return
+        answer = dns.an
+        for _ in range(int(dns.ancount)):
+            if not hasattr(answer, "rrname"):
+                break
+            name = answer.rrname
+            if isinstance(name, bytes):
+                name = name.decode("utf-8", errors="replace")
+            if (
+                int(answer.type) == 16
+                and str(name).rstrip(".").lower().endswith(
+                    "_hcc-pointer._udp.local"
+                )
+            ):
+                rdata = answer.rdata
+                fields = rdata if isinstance(rdata, (list, tuple)) else [rdata]
+                values = []
+                for field in fields:
+                    if isinstance(field, bytes):
+                        field = field.decode("utf-8", errors="replace")
+                    values.append(str(field).strip())
+                metadata = {}
+                for field in values:
+                    if "=" in field:
+                        key, value = field.split("=", 1)
+                        metadata[key] = value
+                if (
+                    SIGNAL_SIGNATURE in values
+                    and metadata.get("counter_mode") == GROUP_MODE
+                    and metadata.get("signal_type") == "group_ack"
+                    and metadata.get("target_session_id") == self.session_id
+                ):
+                    try:
+                        key = (
+                            int(metadata["group_index"]),
+                            int(metadata["group_attempt"]),
+                        )
+                    except (KeyError, ValueError):
+                        return
+                    with self._group_ack_lock:
+                        ack_event = self._group_ack_events.get(key)
+                    if ack_event is not None:
+                        ack_event.set()
+                return
+            answer = answer.payload
+
+    def _start_group_ack_listener(self):
+        if self.counter_mode != GROUP_MODE or self._group_ack_sniffer is not None:
+            return
+        started = threading.Event()
+        self._group_ack_sniffer = AsyncSniffer(
+            iface=self.iface,
+            filter=f"udp and dst host {MDNS_GROUP_IP} and dst port {MDNS_PORT}",
+            prn=self._observe_group_ack,
+            store=False,
+            started_callback=started.set,
+        )
+        self._group_ack_sniffer.start()
+        if not started.wait(timeout=5):
+            self._group_ack_sniffer.stop()
+            self._group_ack_sniffer = None
+            raise RuntimeError("Sender group-ACK listener did not start in 5 seconds")
+
+    def start_group_attempt(self, group_index, group_attempt):
+        """Register an ACK event before a group or replay begins."""
+        if self.counter_mode != GROUP_MODE:
+            return
+        key = (group_index, group_attempt)
+        with self._group_ack_lock:
+            if self._active_group_ack_key is not None:
+                self._group_ack_events.pop(self._active_group_ack_key, None)
+            self._group_ack_events[key] = threading.Event()
+            self._active_group_ack_key = key
+
+    def group_ack_received(self, group_index, group_attempt):
+        """Report whether the receiver has completed this active group."""
+        with self._group_ack_lock:
+            ack_event = self._group_ack_events.get(
+                (group_index, group_attempt)
+            )
+        return ack_event.is_set() if ack_event is not None else False
+
+    def send_group_sync(self, group_index, group_attempt, start_tick_epoch):
+        """Announce the shared counter-0000 epoch before a group attempt."""
+        if self.counter_mode != GROUP_MODE:
+            return
+        event_id = (
+            f"s{self.session_id}-g{group_index + 1}-a{group_attempt}-sync"
+        )
+        fields = [
+            SIGNAL_SIGNATURE,
+            f"event_id={event_id}",
+            f"counter_mode={self.counter_mode}",
+            "signal_type=group_start",
+            f"sender_session_id={self.session_id}",
+            f"group_index={group_index}",
+            f"group_attempt={group_attempt}",
+            f"group_start_tick_epoch={start_tick_epoch}",
+        ]
+        packet = self._build_mdns_packet(event_id, fields)
+        record = {
+            "event_id": event_id,
+            "session_id": self.session_id,
+            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+            "interface": self.iface,
+            "source_ip": self.source_ip,
+            "source_mac": self.source_mac,
+            "destination_ip": MDNS_GROUP_IP,
+            "destination_port": MDNS_PORT,
+            "counter_mode": self.counter_mode,
+            "signal_type": "group_start",
+            "group_index": group_index,
+            "group_attempt": group_attempt,
+            "group_start_tick_epoch": start_tick_epoch,
+            "wire_frame_hex": bytes(packet).hex(),
+            "send_status": "sent",
+        }
+        self._send_packet(packet, record)
+        print(
+            f"Group {group_index + 1} attempt {group_attempt} synchronized "
+            f"at shared counter 0000 (UTC tick {start_tick_epoch}).",
+            flush=True,
+        )
+
     def send_for_match(self, attempt):
-        if self.counter_mode == UTC_MODE:
+        if self.counter_mode in UTC_COUNTER_MODES:
             while True:
                 now = time.time()
                 phase = now - int(now)
@@ -160,7 +321,16 @@ class PointerSignalSender:
                 time.sleep(delay)
 
         sample_no = attempt["sample_no"]
-        event_id = f"s{self.session_id}-w{attempt['window_index']}"
+        group_boundary = (
+            self.counter_mode == GROUP_MODE and attempt.get("group_end", False)
+        )
+        if self.counter_mode == GROUP_MODE:
+            event_id = (
+                f"s{self.session_id}-g{attempt['group_index'] + 1}"
+                f"-a{attempt['group_attempt']}-w{attempt['window_index']}"
+            )
+        else:
+            event_id = f"s{self.session_id}-w{attempt['window_index']}"
         packet = self._build_packet(attempt, event_id)
         record = {
             "event_id": event_id,
@@ -183,13 +353,73 @@ class PointerSignalSender:
             "send_status": "sent",
         }
 
-        self._send_packet(packet, record)
+        if not group_boundary:
+            self._send_packet(packet, record)
+            if self.counter_mode == GROUP_MODE:
+                return self.group_ack_received(
+                    attempt["group_index"], attempt["group_attempt"]
+                )
+            return None
+
+        group_key = (attempt["group_index"], attempt["group_attempt"])
+        with self._group_ack_lock:
+            ack_event = self._group_ack_events.get(group_key)
+            if ack_event is None:
+                ack_event = threading.Event()
+                self._group_ack_events[group_key] = ack_event
+                self._active_group_ack_key = group_key
+        received = False
+        try:
+            try:
+                sendp(packet, iface=self.iface, count=1, verbose=False)
+                record["send_status"] = "sent"
+                silence_started = time.monotonic()
+                record["group_ack_status"] = "waiting"
+                ack_wait_started = time.monotonic()
+                received = ack_event.wait(GROUP_ACK_TIMEOUT_SECONDS)
+                record["group_ack_status"] = (
+                    "received" if received else "timeout"
+                )
+                record["group_ack_wait_seconds"] = round(
+                    time.monotonic() - ack_wait_started, 3
+                )
+            except Exception as exc:
+                record["send_status"] = "failed"
+                record["send_error"] = str(exc)
+                record["group_ack_status"] = "not_waited_send_failed"
+                silence_started = time.monotonic()
+
+            silence_wait = 0.0
+            if not received:
+                with self._group_ack_lock:
+                    self._group_ack_events.pop(group_key, None)
+                    if self._active_group_ack_key == group_key:
+                        self._active_group_ack_key = None
+                silence_wait = max(
+                    0.0,
+                    GROUP_RETRY_SILENCE_SECONDS
+                    - (time.monotonic() - silence_started),
+                )
+                if silence_wait:
+                    time.sleep(silence_wait)
+            record["group_silence_wait_seconds"] = round(silence_wait, 3)
+            self._append_record(record)
+        finally:
+            with self._group_ack_lock:
+                self._group_ack_events.pop(group_key, None)
+
+        ack_label = (
+            f", group ACK {record['group_ack_status']} for group "
+            f"{attempt['group_index'] + 1}"
+        )
         print(
             f"       - mDNS pointer multicast sent for {event_id} "
-            f"({len(self.message_bits)} message bits)"
+            f"({len(self.message_bits)} message bits{ack_label})"
         )
+        return received
 
     def send_start_signal(self):
+        self._start_group_ack_listener()
         if self.counter_mode == SYNCED_CLOCK_MODE:
             print(
                 "Synchronized clock mode: sniffing for a broadcast ARP "
@@ -260,7 +490,7 @@ class PointerSignalSender:
         start_at_epoch = None
         if self.counter_mode == SYNCED_CLOCK_MODE:
             start_at_epoch = next_minute_epoch(anchor_wallclock)
-        elif self.counter_mode == UTC_MODE:
+        elif self.counter_mode in UTC_COUNTER_MODES:
             start_at_epoch = (
                 utc_tick_epoch(anchor_wallclock) + UTC_START_LEAD_TICKS
             )
@@ -297,7 +527,7 @@ class PointerSignalSender:
         if start_at_epoch is not None:
             record["start_at_epoch"] = start_at_epoch
         self._send_packet(packet, record)
-        if self.counter_mode == UTC_MODE:
+        if self.counter_mode in UTC_COUNTER_MODES:
             start_at = datetime.fromtimestamp(
                 start_at_epoch + UTC_TICK_PHASE_SECONDS
             ).isoformat(timespec="milliseconds")
@@ -319,3 +549,13 @@ class PointerSignalSender:
             return start_at_epoch
         print(f"Startup pointer sent for {event_id}")
         return anchor_perf_counter
+
+    def close(self):
+        if self._group_ack_sniffer is not None:
+            if self._group_ack_sniffer.running:
+                self._group_ack_sniffer.stop()
+            self._group_ack_sniffer.join()
+            self._group_ack_sniffer = None
+        with self._group_ack_lock:
+            self._group_ack_events.clear()
+            self._active_group_ack_key = None
