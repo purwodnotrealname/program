@@ -6,7 +6,6 @@ import time
 from scapy.all import conf, get_if_list
 
 from engine.periodic_counter import (
-    GROUP_ACK_TIMEOUT_SECONDS,
     GROUP_MODE,
     GROUP_RETRY_TIMEOUT_SECONDS,
     GROUP_WINDOW_COUNT,
@@ -19,6 +18,7 @@ from engine.periodic_counter import (
     UTC_TICK_PHASE_SECONDS,
     PeriodicCounterState,
     counter_for_utc_tick,
+    counter_zero_tick_epoch_at_or_after,
     next_counter_zero_tick_epoch,
     timestamp_now,
     utc_tick_epoch,
@@ -35,7 +35,7 @@ class ICDExtractor:
         on_match=None,
         on_start=None,
         on_group_start=None,
-        on_group_ack=None,
+        on_group_status=None,
         on_group_sync=None,
         counter_mode=PERIODIC_MODE,
     ):
@@ -55,11 +55,13 @@ class ICDExtractor:
             for callback in (
                 on_match,
                 on_group_start,
-                on_group_ack,
+                on_group_status,
                 on_group_sync,
             )
         ):
-            raise ValueError("UTC group mode requires pointer and ACK callbacks")
+            raise ValueError(
+                "UTC group mode requires pointer and status-query callbacks"
+            )
 
         self.iface = iface
         self.counter_mode = counter_mode
@@ -67,7 +69,7 @@ class ICDExtractor:
         self.on_match = on_match
         self.on_start = on_start
         self.on_group_start = on_group_start
-        self.on_group_ack = on_group_ack
+        self.on_group_status = on_group_status
         self.on_group_sync = on_group_sync
         self.records = []
         self.sample_count = 0
@@ -181,13 +183,8 @@ class ICDExtractor:
             group_acked = False
             group_sync_sent = False
             group_start_tick_epoch = next_tick_epoch
+            retry_after_epoch = None
             while self.matcher.pointer < group_end:
-                if self.on_group_ack(
-                    group_start // GROUP_WINDOW_COUNT,
-                    group_attempt,
-                ):
-                    group_acked = True
-                    break
                 delay = (
                     next_tick_epoch + UTC_TICK_PHASE_SECONDS - time.time()
                 )
@@ -260,32 +257,30 @@ class ICDExtractor:
                     "group_end": self.matcher.pointer + 1 == group_end,
                     "group_start_tick_epoch": group_start_tick_epoch,
                 }
-                ack_received = self._process_periodic_sample(
+                self._process_periodic_sample(
                     self.sample_count + 1,
                     clock_tick_epoch=next_tick_epoch,
                     group_info=group_info,
                 )
-                if ack_received is True:
-                    group_acked = True
-                    break
                 group_pointer_matched = self.matcher.pointer == group_end
                 next_tick_epoch += 1
 
                 if group_pointer_matched:
-                    print(
-                        f"No group ACK within {GROUP_ACK_TIMEOUT_SECONDS} "
-                        f"seconds; sender stayed silent for more than "
-                        f"{GROUP_RETRY_TIMEOUT_SECONDS} seconds. Replaying "
-                        "this group at the next counter 0000.",
-                        flush=True,
+                    group_acked, retry_after_epoch = self.on_group_status(
+                        group_start // GROUP_WINDOW_COUNT,
+                        group_attempt,
+                        group_window_count,
+                        self.matcher.bit_length,
                     )
+                    if not group_acked:
+                        print(
+                            "No complete-group ACK received. Sender stopped "
+                            f"counter processing for {GROUP_RETRY_TIMEOUT_SECONDS} "
+                            "seconds; replaying this group from window 0 at "
+                            "the next shared counter 0000.",
+                            flush=True,
+                        )
                     break
-
-            if not group_acked and self.on_group_ack(
-                group_start // GROUP_WINDOW_COUNT,
-                group_attempt,
-            ):
-                group_acked = True
 
             if group_acked:
                 print(
@@ -299,9 +294,15 @@ class ICDExtractor:
                 group_attempt += 1
 
             if group_start < total_windows:
-                next_tick_epoch = next_counter_zero_tick_epoch(
-                    start_reference
-                )
+                if group_acked or retry_after_epoch is None:
+                    next_tick_epoch = next_counter_zero_tick_epoch(
+                        start_reference
+                    )
+                else:
+                    next_tick_epoch = counter_zero_tick_epoch_at_or_after(
+                        start_reference,
+                        retry_after_epoch,
+                    )
 
     def _start_periodic(self, start_reference):
         self.t0_wallclock = timestamp_now()

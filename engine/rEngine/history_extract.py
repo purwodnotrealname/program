@@ -1,6 +1,7 @@
 """Tangkap anchor ARP dan pointer Periodic-B untuk menghubungkan counter."""
 
 import json
+import math
 import queue
 import threading
 import time
@@ -19,6 +20,7 @@ from engine.interface_utils import describe_interface
 from engine.periodic_counter import (
     GROUP_MODE,
     GROUP_RETRY_TIMEOUT_SECONDS,
+    GROUP_RETRY_SILENCE_SECONDS,
     GROUP_WINDOW_COUNT,
     OUTPUT_BITS,
     PERIODIC_COUNTER_INTERVAL_SECONDS,
@@ -28,6 +30,8 @@ from engine.periodic_counter import (
     UTC_TICK_PHASE_SECONDS,
     PeriodicCounterState,
     counter_for_utc_tick,
+    counter_zero_tick_epoch_at_or_after,
+    next_counter_zero_tick_epoch,
     timestamp_now,
     utc_tick_epoch,
 )
@@ -98,6 +102,9 @@ class ReceiverHistoryExtractor:
         self._stop_requested = threading.Event()
         self._observed_arp_anchors = OrderedDict()
         self._group_retry_pending = False
+        self._group_retry_pause_after_epoch = None
+        self._group_counter_paused = False
+        self._group_resume_tick_epoch = None
         self._group_sender_session_id = None
         self._final_group_complete = False
         self._group_attempt_start_epochs = {}
@@ -154,34 +161,51 @@ class ReceiverHistoryExtractor:
             flush=True,
         )
 
-    def _check_pointer_idle_timeout(self):
-        """Handle the group replay timeout or stop ordinary receiver modes."""
-        if self._last_pointer_sample_count is None:
-            return
-        idle_samples = self.sample_count - self._last_pointer_sample_count
+    def _check_pointer_idle_timeout(self, clock_tick_epoch=None):
+        """Pause group sampling after silence; stop ordinary modes on idle."""
         if self.counter_mode == GROUP_MODE:
-            if self._final_group_complete:
-                return
-            if idle_samples <= GROUP_RETRY_TIMEOUT_SECONDS:
-                return
+            if (
+                self._group_retry_pause_after_epoch is None
+                or clock_tick_epoch is None
+                or clock_tick_epoch < self._group_retry_pause_after_epoch
+                or self._utc_start_tick_epoch is None
+            ):
+                return False
+
+            resume_tick_epoch = counter_zero_tick_epoch_at_or_after(
+                self._utc_start_tick_epoch,
+                self._group_retry_pause_after_epoch,
+            )
+            if resume_tick_epoch < clock_tick_epoch:
+                resume_tick_epoch = next_counter_zero_tick_epoch(
+                    self._utc_start_tick_epoch,
+                    time.time(),
+                )
+            self._group_counter_paused = True
+            self._group_resume_tick_epoch = resume_tick_epoch
+            self._next_utc_tick_epoch = resume_tick_epoch
             self._group_retry_pending = True
             self.store.append_event({
                 "event_type": "group_replay_expected",
                 "session_id": self.session_id,
                 "timestamp": timestamp_now(),
-                "idle_counter_samples": idle_samples,
+                "idle_counter_samples": self.sample_count
+                - (self._last_pointer_sample_count or 0),
                 "silence_threshold_seconds": GROUP_RETRY_TIMEOUT_SECONDS,
-                "action": "retain received windows and accept replayed group",
+                "resume_tick_epoch": resume_tick_epoch,
+                "action": "pause counter until shared counter 0000; retain group windows",
             })
             print(
-                f"No pointer for more than {GROUP_RETRY_TIMEOUT_SECONDS} "
-                "seconds; retaining received windows and waiting for the "
-                "sender to replay this group.",
+                f"No sender pointer for {GROUP_RETRY_TIMEOUT_SECONDS} "
+                "seconds; receiver counter paused until shared counter "
+                f"0000 at UTC tick {resume_tick_epoch}.",
                 flush=True,
             )
-            self._last_pointer_sample_count = self.sample_count
-            return
+            return True
 
+        if self._last_pointer_sample_count is None:
+            return False
+        idle_samples = self.sample_count - self._last_pointer_sample_count
         if idle_samples >= POINTER_IDLE_COUNTER_SAMPLES:
             print(
                 f"No data pointer received for "
@@ -190,6 +214,7 @@ class ReceiverHistoryExtractor:
                 flush=True,
             )
             self._stop_requested.set()
+        return False
 
     def _emit_due_periodic_values(self, now_perf_counter, now_epoch=None):
         """Keluarkan sampel yang jadwal intervalnya sudah tiba."""
@@ -202,14 +227,46 @@ class ReceiverHistoryExtractor:
             if now_epoch is None:
                 now_epoch = time.time()
             due_tick_epoch = utc_tick_epoch(now_epoch)
+            if (
+                self.counter_mode == GROUP_MODE
+                and self._group_counter_paused
+            ):
+                if due_tick_epoch < self._next_utc_tick_epoch:
+                    return
+                if due_tick_epoch > self._next_utc_tick_epoch:
+                    self._next_utc_tick_epoch = (
+                        counter_zero_tick_epoch_at_or_after(
+                            self._utc_start_tick_epoch,
+                            due_tick_epoch + 1,
+                        )
+                    )
+                    self._group_resume_tick_epoch = (
+                        self._next_utc_tick_epoch
+                    )
+                    return
+                self._group_counter_paused = False
+                self._group_resume_tick_epoch = None
+                self._group_retry_pause_after_epoch = None
+                print(
+                    "Receiver counter resumed at shared counter 0000; "
+                    "waiting for the sender to replay from group window 0.",
+                    flush=True,
+                )
             while (
                 self._next_utc_tick_epoch <= due_tick_epoch
                 and not self._stop_requested.is_set()
             ):
                 tick_epoch = self._next_utc_tick_epoch
+                if (
+                    self.counter_mode == GROUP_MODE
+                    and self._group_retry_pause_after_epoch is not None
+                    and tick_epoch >= self._group_retry_pause_after_epoch
+                ):
+                    self._check_pointer_idle_timeout(tick_epoch)
+                    return
                 self._record_periodic_value(clock_tick_epoch=tick_epoch)
                 self._next_utc_tick_epoch += 1
-                self._check_pointer_idle_timeout()
+                self._check_pointer_idle_timeout(tick_epoch)
             return
 
         while (
@@ -225,7 +282,7 @@ class ReceiverHistoryExtractor:
                 self._next_periodic_tick_epoch = tick_epoch + int(
                     PERIODIC_COUNTER_INTERVAL_SECONDS
                 )
-            self._check_pointer_idle_timeout()
+            self._check_pointer_idle_timeout(tick_epoch)
 
     def _record_start_pointer(
         self,
@@ -559,6 +616,7 @@ class ReceiverHistoryExtractor:
         self._group_attempt_start_epochs[key] = start_tick_epoch
         self._last_pointer_sample_count = self.sample_count
         self._group_retry_pending = False
+        self._group_retry_pause_after_epoch = None
         self.store.append_event({
             "event_type": "group_attempt_sync",
             "session_id": self.session_id,
@@ -572,6 +630,111 @@ class ReceiverHistoryExtractor:
         print(
             f"Group {group_index + 1} attempt {group_attempt} aligned at "
             f"the same counter 0000 UTC tick {start_tick_epoch}.",
+            flush=True,
+        )
+
+    def _record_group_status_query(
+        self, pointer_record, timestamp, capture_epoch=None
+    ):
+        """Answer a separate status query only when every group window exists."""
+        if capture_epoch is None:
+            capture_epoch = time.time()
+        try:
+            sender_session_id = pointer_record["sender_session_id"]
+            group_index = int(pointer_record["group_index"])
+            group_attempt = int(pointer_record["group_attempt"])
+            group_window_count = int(pointer_record["group_window_count"])
+            message_bit_length = int(pointer_record["message_bit_length"])
+            retry_after_epoch = int(pointer_record["retry_after_epoch"])
+        except (KeyError, TypeError, ValueError):
+            self._note_recognition_rejection(
+                "group status query has missing or invalid metadata"
+            )
+            return
+
+        values = (
+            group_index,
+            group_attempt,
+            group_window_count,
+            message_bit_length,
+            retry_after_epoch,
+        )
+        if (
+            not sender_session_id
+            or any(value < 0 for value in values)
+            or group_attempt < 1
+            or message_bit_length <= 0
+        ):
+            self._note_recognition_rejection(
+                "group status query indexes must be non-negative"
+            )
+            return
+
+        total_windows = (
+            message_bit_length + OUTPUT_BITS - 1
+        ) // OUTPUT_BITS
+        group_start_window = group_index * GROUP_WINDOW_COUNT
+        expected_window_count = min(
+            GROUP_WINDOW_COUNT,
+            max(0, total_windows - group_start_window),
+        )
+        if (
+            not 1 <= group_window_count <= GROUP_WINDOW_COUNT
+            or group_window_count != expected_window_count
+        ):
+            self._note_recognition_rejection(
+                "group status query count does not match its message"
+            )
+            return
+
+        if (
+            self._group_sender_session_id is not None
+            and self._group_sender_session_id != sender_session_id
+        ):
+            self._note_recognition_rejection(
+                "group status query came from a different sender session"
+            )
+            return
+        self._group_sender_session_id = sender_session_id
+        self._last_pointer_sample_count = self.sample_count
+        self._group_retry_pause_after_epoch = retry_after_epoch
+
+        progress = self.secret_bits_store.group_progress(
+            sender_session_id,
+            group_index,
+            group_window_count,
+        )
+        pointer_record["timestamp"] = timestamp
+        self.store.append_event({
+            "event_type": "group_status_query",
+            "session_id": self.session_id,
+            "timestamp": timestamp,
+            "sender_session_id": sender_session_id,
+            "group_index": group_index,
+            "group_attempt": group_attempt,
+            "group_window_count": group_window_count,
+            "received_window_count": progress["received_window_count"],
+            "missing_window_indices": progress["missing_window_indices"],
+            "retry_after_epoch": retry_after_epoch,
+            "query_received_epoch": capture_epoch,
+            "status": "complete" if progress["complete"] else "incomplete",
+        })
+
+        if progress["complete"]:
+            print(
+                f"Group {group_index + 1} status query: all "
+                f"{group_window_count} windows are present; sending ACK.",
+                flush=True,
+            )
+            self._send_group_ack(pointer_record)
+            return
+
+        self._group_retry_pending = True
+        print(
+            f"Group {group_index + 1} status query: receiver has "
+            f"{progress['received_window_count']}/{group_window_count} "
+            "windows; no ACK sent. Counter will pause after the 24-second "
+            "silence interval.",
             flush=True,
         )
 
@@ -697,6 +860,12 @@ class ReceiverHistoryExtractor:
             self.store.pop_latest()
         self._last_pointer_sample_count = self.sample_count
         self._group_retry_pending = False
+        if self.counter_mode == GROUP_MODE:
+            if capture_epoch is None:
+                capture_epoch = time.time()
+            self._group_retry_pause_after_epoch = math.ceil(
+                capture_epoch + GROUP_RETRY_SILENCE_SECONDS
+            )
         print(
             f"Pointer from "
             f"{pointer_record['src_ip'] or pointer_record['src_mac'] or '?'} "
@@ -861,6 +1030,21 @@ class ReceiverHistoryExtractor:
                 return
             self._record_group_start_marker(pointer_record, timestamp)
             return
+        if signal_type == "group_status":
+            if self.counter_mode != GROUP_MODE:
+                self._note_recognition_rejection(
+                    "group status query is only valid in UTC group mode"
+                )
+                return
+            if not self._start_pointer_seen:
+                self._note_recognition_rejection(
+                    "group status query arrived before the startup pointer"
+                )
+                return
+            self._record_group_status_query(
+                pointer_record, timestamp, capture_epoch
+            )
+            return
         if not self._start_pointer_seen:
             self._note_recognition_rejection(
                 "valid data pointer arrived before the startup pointer"
@@ -869,12 +1053,6 @@ class ReceiverHistoryExtractor:
         pointer_event = self._record_pointer(
             pointer_record, timestamp, capture_epoch
         )
-        if (
-            self.counter_mode == GROUP_MODE
-            and pointer_event is not None
-            and pointer_event.get("group_complete")
-        ):
-            self._send_group_ack(pointer_record)
 
     def _process_loop(self):
         """Proses frame antrean dan timer counter pada satu worker terurut."""
@@ -949,9 +1127,9 @@ class ReceiverHistoryExtractor:
         )
         if self.counter_mode == GROUP_MODE:
             print(
-                "Group replay detection: "
-                f"more than {GROUP_RETRY_TIMEOUT_SECONDS} seconds without "
-                "a pointer.",
+                "Group replay mode: after "
+                f"{GROUP_RETRY_TIMEOUT_SECONDS} seconds without a sender "
+                "pointer, pause counter sampling until shared counter 0000.",
                 flush=True,
             )
         else:
@@ -988,11 +1166,11 @@ class ReceiverHistoryExtractor:
             if self.counter_mode == GROUP_MODE:
                 print(
                     "Option 4 stores each received window by its group/window "
-                    "index. It sends a multicast group ACK after all windows "
-                    "arrive; missing windows remain available for replay. "
-                    f"After more than {GROUP_RETRY_TIMEOUT_SECONDS} seconds "
-                    "without a pointer, it retains the group and waits for "
-                    "replay.",
+                    "index. A separate group-status pointer asks whether every "
+                    "window arrived; the receiver ACKs only complete groups. "
+                    f"After {GROUP_RETRY_TIMEOUT_SECONDS} silent seconds, it "
+                    "pauses counter sampling until shared counter 0000 and keeps "
+                    "the partial group for replay from window 0.",
                     flush=True,
                 )
         else:

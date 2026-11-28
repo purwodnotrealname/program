@@ -1,0 +1,48 @@
+{
+  "counter_mode": "utc_group",
+  "capacity": 4,
+  "order": "newest_first",
+  "buffered_count": 4,
+  "counters": [
+    {
+      "session_id": "3d9ab25737b6442d921d131080bf862c",
+      "sample_no": 42,
+      "protocol": "PERIODIC",
+      "counter_mode": "utc_group",
+      "timestamp": "2026-11-28T13:15:50.015",
+      "counter": 9,
+      "counter_bits": "1001",
+      "clock_tick_epoch": 1795842950
+    },
+    {
+      "session_id": "3d9ab25737b6442d921d131080bf862c",
+      "sample_no": 41,
+      "protocol": "PERIODIC",
+      "counter_mode": "utc_group",
+      "timestamp": "2026-11-28T13:15:49.005",
+      "counter": 8,
+      "counter_bits": "1000",
+      "clock_tick_epoch": 1795842949
+    },
+    {
+      "session_id": "3d9ab25737b6442d921d131080bf862c",
+      "sample_no": 40,
+      "protocol": "PERIODIC",
+      "counter_mode": "utc_group",
+      "timestamp": "2026-11-28T13:15:48.010",
+      "counter": 7,
+      "counter_bits": "0111",
+      "clock_tick_epoch": 1795842948
+    },
+    {
+      "session_id": "3d9ab25737b6442d921d131080bf862c",
+      "sample_no": 39,
+      "protocol": "PERIODIC",
+      "counter_mode": "utc_group",
+      "timestamp": "2026-11-28T13:15:47.013",
+      "counter": 6,
+      "counter_bits": "0110",
+      "clock_tick_epoch": 1795842947
+    }
+  ]
+}

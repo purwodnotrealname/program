@@ -1,4 +1,5 @@
 import json
+import math
 import threading
 import time
 import uuid
@@ -257,6 +258,97 @@ class PointerSignalSender:
             )
         return ack_event.is_set() if ack_event is not None else False
 
+    def send_group_status(
+        self,
+        group_index,
+        group_attempt,
+        group_window_count,
+        message_bit_length,
+    ):
+        """Ask the receiver separately whether the current group is complete."""
+        if self.counter_mode != GROUP_MODE:
+            return False, None
+
+        group_key = (group_index, group_attempt)
+        with self._group_ack_lock:
+            ack_event = self._group_ack_events.get(group_key)
+            if ack_event is None:
+                ack_event = threading.Event()
+                self._group_ack_events[group_key] = ack_event
+                self._active_group_ack_key = group_key
+
+        retry_after_epoch = math.ceil(
+            time.time() + GROUP_RETRY_SILENCE_SECONDS
+        )
+        event_id = (
+            f"s{self.session_id}-g{group_index + 1}-a{group_attempt}-status"
+        )
+        fields = [
+            SIGNAL_SIGNATURE,
+            f"event_id={event_id}",
+            f"counter_mode={self.counter_mode}",
+            "signal_type=group_status",
+            f"sender_session_id={self.session_id}",
+            f"group_index={group_index}",
+            f"group_attempt={group_attempt}",
+            f"group_window_count={group_window_count}",
+            f"message_bit_length={message_bit_length}",
+            f"retry_after_epoch={retry_after_epoch}",
+        ]
+        packet = self._build_mdns_packet(event_id, fields)
+        record = {
+            "event_id": event_id,
+            "session_id": self.session_id,
+            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+            "interface": self.iface,
+            "source_ip": self.source_ip,
+            "source_mac": self.source_mac,
+            "destination_ip": MDNS_GROUP_IP,
+            "destination_port": MDNS_PORT,
+            "counter_mode": self.counter_mode,
+            "signal_type": "group_status",
+            "group_index": group_index,
+            "group_attempt": group_attempt,
+            "group_window_count": group_window_count,
+            "retry_after_epoch": retry_after_epoch,
+            "wire_frame_hex": bytes(packet).hex(),
+        }
+
+        try:
+            sendp(packet, iface=self.iface, count=1, verbose=False)
+            record["send_status"] = "sent"
+            wait_started = time.monotonic()
+            received = ack_event.wait(GROUP_ACK_TIMEOUT_SECONDS)
+            record["group_ack_status"] = "received" if received else "timeout"
+            record["group_ack_wait_seconds"] = round(
+                time.monotonic() - wait_started, 3
+            )
+        except Exception as exc:
+            record["send_status"] = "failed"
+            record["send_error"] = str(exc)
+            record["group_ack_status"] = "not_waited_send_failed"
+            self._append_record(record)
+            raise
+        finally:
+            with self._group_ack_lock:
+                self._group_ack_events.pop(group_key, None)
+                if self._active_group_ack_key == group_key:
+                    self._active_group_ack_key = None
+
+        self._append_record(record)
+        if received:
+            print(
+                f"Receiver confirmed group {group_index + 1} complete.",
+                flush=True,
+            )
+        else:
+            print(
+                f"No complete-group ACK for group {group_index + 1}; "
+                f"counter processing pauses until UTC tick {retry_after_epoch}.",
+                flush=True,
+            )
+        return received, retry_after_epoch
+
     def send_group_sync(self, group_index, group_attempt, start_tick_epoch):
         """Announce the shared counter-0000 epoch before a group attempt."""
         if self.counter_mode != GROUP_MODE:
@@ -321,9 +413,6 @@ class PointerSignalSender:
                 time.sleep(delay)
 
         sample_no = attempt["sample_no"]
-        group_boundary = (
-            self.counter_mode == GROUP_MODE and attempt.get("group_end", False)
-        )
         if self.counter_mode == GROUP_MODE:
             event_id = (
                 f"s{self.session_id}-g{attempt['group_index'] + 1}"
@@ -353,70 +442,12 @@ class PointerSignalSender:
             "send_status": "sent",
         }
 
-        if not group_boundary:
-            self._send_packet(packet, record)
-            if self.counter_mode == GROUP_MODE:
-                return self.group_ack_received(
-                    attempt["group_index"], attempt["group_attempt"]
-                )
-            return None
-
-        group_key = (attempt["group_index"], attempt["group_attempt"])
-        with self._group_ack_lock:
-            ack_event = self._group_ack_events.get(group_key)
-            if ack_event is None:
-                ack_event = threading.Event()
-                self._group_ack_events[group_key] = ack_event
-                self._active_group_ack_key = group_key
-        received = False
-        try:
-            try:
-                sendp(packet, iface=self.iface, count=1, verbose=False)
-                record["send_status"] = "sent"
-                silence_started = time.monotonic()
-                record["group_ack_status"] = "waiting"
-                ack_wait_started = time.monotonic()
-                received = ack_event.wait(GROUP_ACK_TIMEOUT_SECONDS)
-                record["group_ack_status"] = (
-                    "received" if received else "timeout"
-                )
-                record["group_ack_wait_seconds"] = round(
-                    time.monotonic() - ack_wait_started, 3
-                )
-            except Exception as exc:
-                record["send_status"] = "failed"
-                record["send_error"] = str(exc)
-                record["group_ack_status"] = "not_waited_send_failed"
-                silence_started = time.monotonic()
-
-            silence_wait = 0.0
-            if not received:
-                with self._group_ack_lock:
-                    self._group_ack_events.pop(group_key, None)
-                    if self._active_group_ack_key == group_key:
-                        self._active_group_ack_key = None
-                silence_wait = max(
-                    0.0,
-                    GROUP_RETRY_SILENCE_SECONDS
-                    - (time.monotonic() - silence_started),
-                )
-                if silence_wait:
-                    time.sleep(silence_wait)
-            record["group_silence_wait_seconds"] = round(silence_wait, 3)
-            self._append_record(record)
-        finally:
-            with self._group_ack_lock:
-                self._group_ack_events.pop(group_key, None)
-
-        ack_label = (
-            f", group ACK {record['group_ack_status']} for group "
-            f"{attempt['group_index'] + 1}"
-        )
+        self._send_packet(packet, record)
         print(
             f"       - mDNS pointer multicast sent for {event_id} "
-            f"({len(self.message_bits)} message bits{ack_label})"
+            f"({len(self.message_bits)} message bits)"
         )
-        return received
+        return None
 
     def send_start_signal(self):
         self._start_group_ack_listener()

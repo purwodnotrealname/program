@@ -12,8 +12,8 @@ UTC_COUNTER_MODES = (UTC_MODE, GROUP_MODE)
 GROUP_BITS = 100
 GROUP_WINDOW_COUNT = GROUP_BITS // OUTPUT_BITS
 GROUP_ACK_TIMEOUT_SECONDS = 2
-GROUP_RETRY_TIMEOUT_SECONDS = 16
-GROUP_RETRY_SILENCE_SECONDS = GROUP_RETRY_TIMEOUT_SECONDS + 1
+GROUP_RETRY_SILENCE_SECONDS = 24
+GROUP_RETRY_TIMEOUT_SECONDS = GROUP_RETRY_SILENCE_SECONDS
 HCC_MODE = "HCC"
 PERIODIC_COUNTER_MODES = (
     PERIODIC_MODE,
@@ -36,6 +36,20 @@ def next_counter_zero_tick_epoch(start_tick_epoch, timestamp=None):
     tick_epoch = next_utc_tick_epoch(timestamp)
     remainder = (tick_epoch - start_tick_epoch) % len(PERIODIC_COUNTER_VALUES)
     return tick_epoch + (-remainder) % len(PERIODIC_COUNTER_VALUES)
+
+
+def counter_zero_tick_epoch_at_or_after(start_tick_epoch, earliest_tick_epoch):
+    """Return the first shared counter-0000 tick at or after an epoch."""
+    for name, value in (
+        ("start_tick_epoch", start_tick_epoch),
+        ("earliest_tick_epoch", earliest_tick_epoch),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer UTC second")
+    remainder = (
+        earliest_tick_epoch - start_tick_epoch
+    ) % len(PERIODIC_COUNTER_VALUES)
+    return earliest_tick_epoch + (-remainder) % len(PERIODIC_COUNTER_VALUES)
 
 
 def next_minute_epoch(timestamp=None):

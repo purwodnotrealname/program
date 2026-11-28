@@ -100,6 +100,7 @@ class PointerRecognizer:
                 "group_window_count",
                 "group_end",
                 "group_start_tick_epoch",
+                "retry_after_epoch",
                 "window_index",
                 "window_bits",
                 "compared_bits",
@@ -157,6 +158,9 @@ class PointerRecognizer:
                 group_start_tick_epoch = cls._field_value(
                     fields, "group_start_tick_epoch"
                 )
+                retry_after_epoch = cls._field_value(
+                    fields, "retry_after_epoch"
+                )
                 window_index = cls._field_value(fields, "window_index")
                 window_bits = cls._field_value(fields, "window_bits")
                 compared_bits = cls._field_value(fields, "compared_bits")
@@ -186,6 +190,7 @@ class PointerRecognizer:
                     ("group_window_count", group_window_count),
                     ("group_end", group_end),
                     ("group_start_tick_epoch", group_start_tick_epoch),
+                    ("retry_after_epoch", retry_after_epoch),
                     ("window_index", window_index),
                     ("window_bits", window_bits),
                     ("compared_bits", compared_bits),

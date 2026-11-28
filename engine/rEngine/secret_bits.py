@@ -32,6 +32,41 @@ class ReceiverSecretBitsStore:
             self._save()
         self.data.setdefault("chunks", [])
 
+    def group_progress(
+        self, sender_session_id, group_index, expected_window_count
+    ):
+        """Return which stable windows have arrived for one sender group."""
+        run = next(
+            (
+                item for item in self.data.get("group_runs", [])
+                if item.get("sender_session_id") == sender_session_id
+            ),
+            None,
+        )
+        group = None
+        if run is not None:
+            group = next(
+                (
+                    item for item in run.get("groups", [])
+                    if item.get("group_index") == group_index
+                ),
+                None,
+            )
+        windows = group.get("windows", {}) if group is not None else {}
+        received = [
+            index for index in range(expected_window_count)
+            if str(index) in windows
+        ]
+        missing = [
+            index for index in range(expected_window_count)
+            if str(index) not in windows
+        ]
+        return {
+            "received_window_count": len(received),
+            "missing_window_indices": missing,
+            "complete": not missing,
+        }
+
     def record_pointer(
         self,
         pointer_record,
