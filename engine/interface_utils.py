@@ -68,10 +68,10 @@ def choose_counter_mode():
         "keep both system clocks synchronized and start receiver first"
     )
     print(
-        "  [4] UTC-derived + groups of 100 bits; sender sends a separate "
-        "group-status pointer. If incomplete, sender stops counter processing; "
-        "receiver waits 24 silent seconds, then both wait for shared counter "
-        "0000 and replay from window 0; start receiver first and sync clocks"
+        "  [4] UTC second-00 anchors + stop-and-wait groups of up to 100 bits; "
+        "receiver sends one complete/replay pointer, then waits for data; "
+        "after 24 seconds without data it sends a fresh replay pointer; start "
+        "receiver first and sync clocks"
     )
     while True:
         choice = input(

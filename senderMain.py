@@ -63,8 +63,8 @@ def main():
         on_match=signal_sender.send_for_match,
         on_start=signal_sender.send_start_signal,
         on_group_start=signal_sender.start_group_attempt,
-        on_group_status=signal_sender.send_group_status,
-        on_group_sync=signal_sender.send_group_sync,
+        on_group_response=signal_sender.wait_for_group_response,
+        on_group_response_pending=signal_sender.group_response_received,
         counter_mode=counter_mode,
     )
 

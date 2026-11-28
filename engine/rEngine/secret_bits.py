@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from engine.periodic_counter import OUTPUT_BITS
+from engine.periodic_counter import GROUP_WINDOW_COUNT, OUTPUT_BITS
 
 
 class ReceiverSecretBitsStore:
@@ -120,8 +120,16 @@ class ReceiverSecretBitsStore:
                     "bits": bits,
                     "pointer_no": pointer_event["pointer_no"],
                 }
-                self.data["secret_bits"] += bits
-                self.data["bit_length"] = len(self.data["secret_bits"])
+                if "group_runs" in self.data:
+                    legacy_bits = self.data.setdefault(
+                        "legacy_secret_bits",
+                        self.data.get("secret_bits", ""),
+                    )
+                    legacy_bits += bits
+                    self._set_secret_bits(legacy_bits)
+                else:
+                    self.data["secret_bits"] += bits
+                    self.data["bit_length"] = len(self.data["secret_bits"])
                 self.data["chunks"].append(chunk)
                 pointer_event["status"] = "counter_added"
                 pointer_event["counter"] = history_record["counter"]
@@ -155,6 +163,8 @@ class ReceiverSecretBitsStore:
                 "groups": [],
             }
             group_runs.append(run)
+        elif run.get("message_bit_length") != group_metadata["message_bit_length"]:
+            raise ValueError("message bit length changed during a sender session")
 
         group = next(
             (
@@ -224,22 +234,14 @@ class ReceiverSecretBitsStore:
             elif existing.get("bits") == bits:
                 pointer_event["status"] = "group_window_already_recorded"
             else:
-                existing.update({
-                    "bits": bits,
-                    "counter": history_record["counter"],
+                group.setdefault("conflicts", []).append({
+                    "window_index": group_metadata["window_index"],
+                    "stored_bits": existing.get("bits"),
+                    "received_bits": bits,
                     "group_attempt": group_metadata["group_attempt"],
                     "pointer_no": pointer_event["pointer_no"],
                 })
-                pointer_event["status"] = "group_window_replaced"
-                self._upsert_group_chunk(
-                    sender_session_id,
-                    group_index,
-                    local_window_index,
-                    group_metadata["window_index"],
-                    history_record,
-                    pointer_event["pointer_no"],
-                    bits,
-                )
+                pointer_event["status"] = "group_window_conflict"
 
         missing_windows = [
             index for index in range(group_window_count)
@@ -301,21 +303,47 @@ class ReceiverSecretBitsStore:
         })
 
     def _rebuild_grouped_secret_bits(self):
-        """Build only the contiguous prefix; indexed groups retain any gaps."""
+        """Merge retries into runs and expose only the latest run as secret."""
         if "legacy_secret_bits" not in self.data:
             self.data["legacy_secret_bits"] = self.data.get("secret_bits", "")
-        parts = [self.data["legacy_secret_bits"]]
-        for run in self.data.get("group_runs", []):
-            for group in sorted(
-                run.get("groups", []), key=lambda item: item["group_index"]
-            ):
-                windows = group.get("windows", {})
-                for index in range(group["group_window_count"]):
-                    window = windows.get(str(index))
-                    if window is None:
-                        return self._set_secret_bits("".join(parts))
-                    parts.append(window["bits"])
-        self._set_secret_bits("".join(parts))
+        group_runs = self.data.get("group_runs", [])
+        for run in group_runs:
+            message_bit_length = run["message_bit_length"]
+            total_windows = (
+                message_bit_length + OUTPUT_BITS - 1
+            ) // OUTPUT_BITS
+            groups = {
+                group["group_index"]: group
+                for group in run.get("groups", [])
+            }
+            run_parts = []
+            complete = True
+            for window_index in range(total_windows):
+                group_index, local_index = divmod(
+                    window_index,
+                    GROUP_WINDOW_COUNT,
+                )
+                group = groups.get(group_index)
+                window = (
+                    group.get("windows", {}).get(str(local_index))
+                    if group is not None
+                    else None
+                )
+                if window is None:
+                    complete = False
+                    break
+                run_parts.append(window["bits"])
+
+            run_bits = "".join(run_parts)
+            run["secret_bits"] = run_bits
+            run["bit_length"] = len(run_bits)
+            run["complete"] = complete and len(run_bits) == message_bit_length
+        latest_bits = (
+            group_runs[-1]["secret_bits"]
+            if group_runs
+            else self.data["legacy_secret_bits"]
+        )
+        self._set_secret_bits(latest_bits)
 
     def _set_secret_bits(self, bits):
         self.data["secret_bits"] = bits

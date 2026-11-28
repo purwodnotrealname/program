@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 
 PERIODIC_COUNTER_INTERVAL_SECONDS = 1.0
@@ -11,7 +11,6 @@ GROUP_MODE = "utc_group"
 UTC_COUNTER_MODES = (UTC_MODE, GROUP_MODE)
 GROUP_BITS = 100
 GROUP_WINDOW_COUNT = GROUP_BITS // OUTPUT_BITS
-GROUP_ACK_TIMEOUT_SECONDS = 2
 GROUP_RETRY_SILENCE_SECONDS = 24
 GROUP_RETRY_TIMEOUT_SECONDS = GROUP_RETRY_SILENCE_SECONDS
 HCC_MODE = "HCC"
@@ -57,6 +56,26 @@ def next_minute_epoch(timestamp=None):
     if timestamp is None:
         timestamp = time.time()
     return (int(timestamp) // 60 + 1) * 60
+
+
+def next_utc_minute_anchor_epoch(timestamp=None):
+    """Return the next UTC wall-clock minute start (seconds field ``00``)."""
+    if timestamp is None:
+        timestamp = time.time()
+    current = datetime.fromtimestamp(timestamp, timezone.utc)
+    next_minute = (
+        current.replace(second=0, microsecond=0)
+        + timedelta(minutes=1)
+    )
+    return int(next_minute.timestamp())
+
+
+def is_utc_minute_anchor_epoch(epoch):
+    """Return whether an integer epoch represents UTC with seconds ``00``."""
+    if isinstance(epoch, bool) or not isinstance(epoch, int):
+        return False
+    anchor_time = datetime.fromtimestamp(epoch, timezone.utc)
+    return anchor_time.second == 0 and anchor_time.microsecond == 0
 
 
 def utc_tick_epoch(timestamp=None):

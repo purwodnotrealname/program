@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from scapy.all import get_if_addr, get_if_hwaddr, sendp
 from scapy.layers.dns import DNS, DNSRR
@@ -30,8 +30,8 @@ from engine.periodic_counter import (
     UTC_TICK_PHASE_SECONDS,
     PeriodicCounterState,
     counter_for_utc_tick,
-    counter_zero_tick_epoch_at_or_after,
-    next_counter_zero_tick_epoch,
+    is_utc_minute_anchor_epoch,
+    next_utc_minute_anchor_epoch,
     timestamp_now,
     utc_tick_epoch,
 )
@@ -95,7 +95,11 @@ class ReceiverHistoryExtractor:
         self._next_periodic_tick_epoch = None
         self._next_utc_tick_epoch = None
         self._utc_start_tick_epoch = None
+        self._group_counter_anchor_epoch = None
         self._startup_armed = counter_mode == SYNCED_CLOCK_MODE
+        self._startup_start_at_epoch = None
+        self._startup_sender_session_id = None
+        self._startup_message_bit_length = None
         self._start_pointer_seen = False
         self._pending_start = None
         self._last_pointer_sample_count = None
@@ -106,6 +110,11 @@ class ReceiverHistoryExtractor:
         self._group_counter_paused = False
         self._group_resume_tick_epoch = None
         self._group_sender_session_id = None
+        self._group_received_data = False
+        self._active_group = None
+        self._group_expected_group_index = None
+        self._group_expected_attempt = None
+        self._group_control_pending = None
         self._final_group_complete = False
         self._group_attempt_start_epochs = {}
         self._observed_arp_anchor_perf_counters = {}
@@ -134,9 +143,14 @@ class ReceiverHistoryExtractor:
         if self.counter_mode in UTC_COUNTER_MODES and clock_tick_epoch is not None:
             if self._utc_start_tick_epoch is None:
                 raise RuntimeError("UTC start tick has not been initialized")
+            counter_anchor_epoch = self._utc_start_tick_epoch
+            if self.counter_mode == GROUP_MODE:
+                if self._group_counter_anchor_epoch is None:
+                    raise RuntimeError("Group UTC anchor has not been initialized")
+                counter_anchor_epoch = self._group_counter_anchor_epoch
             counter = counter_for_utc_tick(
                 clock_tick_epoch,
-                self._utc_start_tick_epoch,
+                counter_anchor_epoch,
             )
         else:
             counter = self._counter_state.next_value()
@@ -162,43 +176,50 @@ class ReceiverHistoryExtractor:
         )
 
     def _check_pointer_idle_timeout(self, clock_tick_epoch=None):
-        """Pause group sampling after silence; stop ordinary modes on idle."""
+        """Request a group replay after silence; stop ordinary modes on idle."""
         if self.counter_mode == GROUP_MODE:
             if (
-                self._group_retry_pause_after_epoch is None
+                self._group_counter_paused
+                or self._group_retry_pause_after_epoch is None
                 or clock_tick_epoch is None
                 or clock_tick_epoch < self._group_retry_pause_after_epoch
-                or self._utc_start_tick_epoch is None
+                or self._active_group is None
             ):
                 return False
-
-            resume_tick_epoch = counter_zero_tick_epoch_at_or_after(
-                self._utc_start_tick_epoch,
-                self._group_retry_pause_after_epoch,
+            active = self._active_group
+            progress = self.secret_bits_store.group_progress(
+                active["sender_session_id"],
+                active["group_index"],
+                active["group_window_count"],
             )
-            if resume_tick_epoch < clock_tick_epoch:
-                resume_tick_epoch = next_counter_zero_tick_epoch(
-                    self._utc_start_tick_epoch,
-                    time.time(),
-                )
-            self._group_counter_paused = True
-            self._group_resume_tick_epoch = resume_tick_epoch
-            self._next_utc_tick_epoch = resume_tick_epoch
-            self._group_retry_pending = True
+            action = "complete" if progress["complete"] else "replay"
+            final_group = (
+                (active["group_index"] + 1) * GROUP_WINDOW_COUNT
+                >= (active["message_bit_length"] + OUTPUT_BITS - 1)
+                // OUTPUT_BITS
+            )
+            self._begin_group_control(
+                action=action,
+                active=active,
+                final_group=final_group if action == "complete" else False,
+            )
             self.store.append_event({
-                "event_type": "group_replay_expected",
+                "event_type": "group_silence_timeout",
                 "session_id": self.session_id,
                 "timestamp": timestamp_now(),
                 "idle_counter_samples": self.sample_count
                 - (self._last_pointer_sample_count or 0),
                 "silence_threshold_seconds": GROUP_RETRY_TIMEOUT_SECONDS,
-                "resume_tick_epoch": resume_tick_epoch,
-                "action": "pause counter until shared counter 0000; retain group windows",
+                "action": action,
+                "group_index": active["group_index"],
+                "group_attempt": active["group_attempt"],
+                "received_window_count": progress["received_window_count"],
+                "missing_window_indices": progress["missing_window_indices"],
             })
             print(
-                f"No sender pointer for {GROUP_RETRY_TIMEOUT_SECONDS} "
-                "seconds; receiver counter paused until shared counter "
-                f"0000 at UTC tick {resume_tick_epoch}.",
+                f"No sender pointer for {GROUP_RETRY_TIMEOUT_SECONDS} seconds; "
+                f"receiver sends one {action} pointer and pauses until "
+                "the shared UTC anchor.",
                 flush=True,
             )
             return True
@@ -216,6 +237,128 @@ class ReceiverHistoryExtractor:
             self._stop_requested.set()
         return False
 
+    def _begin_group_control(self, action, active, final_group=False):
+        """Pause sampling and send one receiver control pointer."""
+        if action not in ("complete", "replay"):
+            raise ValueError(f"unsupported group control action: {action!r}")
+        if action == "complete":
+            next_group_index = active["group_index"] + 1
+            next_group_attempt = 1
+        else:
+            next_group_index = active["group_index"]
+            next_group_attempt = active["group_attempt"] + 1
+
+        resume_at_epoch = (
+            0
+            if final_group
+            else next_utc_minute_anchor_epoch(time.time())
+        )
+        self._group_control_pending = {
+            "action": action,
+            **active,
+            "final_group": bool(final_group),
+            "next_group_index": next_group_index,
+            "next_group_attempt": next_group_attempt,
+            "resume_at_epoch": resume_at_epoch,
+        }
+        self._group_counter_paused = True
+        self._group_retry_pause_after_epoch = None
+        if final_group:
+            self._next_utc_tick_epoch = None
+            self._group_resume_tick_epoch = None
+        else:
+            self._group_resume_tick_epoch = resume_at_epoch
+            self._group_counter_anchor_epoch = resume_at_epoch
+            self._next_utc_tick_epoch = resume_at_epoch
+            self._group_expected_group_index = next_group_index
+            self._group_expected_attempt = next_group_attempt
+            total_windows = (
+                active["message_bit_length"] + OUTPUT_BITS - 1
+            ) // OUTPUT_BITS
+            group_start_window = next_group_index * GROUP_WINDOW_COUNT
+            next_window_count = min(
+                GROUP_WINDOW_COUNT,
+                max(0, total_windows - group_start_window),
+            )
+            self._active_group = {
+                "sender_session_id": active["sender_session_id"],
+                "group_index": next_group_index,
+                "group_attempt": next_group_attempt,
+                "group_window_count": next_window_count,
+                "message_bit_length": active["message_bit_length"],
+            }
+            self._group_attempt_start_epochs[
+                (active["sender_session_id"], next_group_index, next_group_attempt)
+            ] = resume_at_epoch
+            self._group_retry_pause_after_epoch = (
+                resume_at_epoch + GROUP_RETRY_SILENCE_SECONDS
+            )
+        self._send_group_control_pointer()
+        if final_group:
+            self._stop_requested.set()
+
+    def _send_group_control_pointer(self):
+        """Send one receiver response when a group completes or times out."""
+        pending = self._group_control_pending
+        if pending is None:
+            return
+
+        signal_type = f"group_{pending['action']}"
+        event_id = (
+            f"r{self.session_id[:12]}-g{pending['group_index'] + 1}"
+            f"-a{pending['group_attempt']}-{pending['action']}"
+        )
+        fields = [
+            POINTER_TXT_SIGNATURE,
+            f"event_id={event_id}",
+            f"counter_mode={GROUP_MODE}",
+            f"signal_type={signal_type}",
+            f"receiver_session_id={self.session_id}",
+            f"target_session_id={pending['sender_session_id']}",
+            f"group_index={pending['group_index']}",
+            f"group_attempt={pending['group_attempt']}",
+            f"group_window_count={pending['group_window_count']}",
+            f"message_bit_length={pending['message_bit_length']}",
+            f"next_group_index={pending['next_group_index']}",
+            f"next_group_attempt={pending['next_group_attempt']}",
+            f"resume_at_epoch={pending['resume_at_epoch']}",
+            f"final_group={int(pending['final_group'])}",
+        ]
+        answer = DNSRR(
+            rrname=f"{event_id}._hcc-pointer._udp.local.",
+            type="TXT",
+            cacheflush=1,
+            ttl=120,
+            rdata=[field.encode("ascii") for field in fields],
+        )
+        packet = (
+            Ether(src=get_if_hwaddr(self.iface), dst=MDNS_GROUP_MAC)
+            / IP(src=get_if_addr(self.iface), dst=MDNS_GROUP_IP, ttl=255)
+            / UDP(sport=MDNS_PORT, dport=MDNS_PORT)
+            / DNS(id=0, qr=1, aa=1, ancount=1, an=answer)
+        )
+        try:
+            sendp(packet, iface=self.iface, count=1, verbose=False)
+            send_status = "sent"
+        except Exception as exc:
+            send_status = "failed"
+            print(f"Could not send {signal_type} for {event_id}: {exc}", flush=True)
+        self.store.append_event({
+            "event_type": signal_type,
+            "session_id": self.session_id,
+            "timestamp": timestamp_now(),
+            "event_id": event_id,
+            "target_session_id": pending["sender_session_id"],
+            "group_index": pending["group_index"],
+            "group_attempt": pending["group_attempt"],
+            "next_group_index": pending["next_group_index"],
+            "next_group_attempt": pending["next_group_attempt"],
+            "resume_at_epoch": pending["resume_at_epoch"],
+            "final_group": pending["final_group"],
+            "send_status": send_status,
+            "wire_frame_hex": bytes(packet).hex(),
+        })
+
     def _emit_due_periodic_values(self, now_perf_counter, now_epoch=None):
         """Keluarkan sampel yang jadwal intervalnya sudah tiba."""
         if self.counter_mode in UTC_COUNTER_MODES:
@@ -231,25 +374,18 @@ class ReceiverHistoryExtractor:
                 self.counter_mode == GROUP_MODE
                 and self._group_counter_paused
             ):
-                if due_tick_epoch < self._next_utc_tick_epoch:
-                    return
-                if due_tick_epoch > self._next_utc_tick_epoch:
-                    self._next_utc_tick_epoch = (
-                        counter_zero_tick_epoch_at_or_after(
-                            self._utc_start_tick_epoch,
-                            due_tick_epoch + 1,
-                        )
-                    )
-                    self._group_resume_tick_epoch = (
-                        self._next_utc_tick_epoch
-                    )
+                pending = self._group_control_pending
+                if (
+                    pending is None
+                    or pending["final_group"]
+                    or due_tick_epoch < pending["resume_at_epoch"]
+                ):
                     return
                 self._group_counter_paused = False
                 self._group_resume_tick_epoch = None
-                self._group_retry_pause_after_epoch = None
                 print(
-                    "Receiver counter resumed at shared counter 0000; "
-                    "waiting for the sender to replay from group window 0.",
+                    "Receiver counter resumed at the shared UTC second-00 "
+                    f"anchor {pending['resume_at_epoch']}.",
                     flush=True,
                 )
             while (
@@ -317,8 +453,46 @@ class ReceiverHistoryExtractor:
                 raise ValueError(
                     "UTC startup pointer has no shared start tick epoch"
                 )
+            if (
+                self.counter_mode == GROUP_MODE
+                and not is_utc_minute_anchor_epoch(start_at_epoch)
+            ):
+                raise ValueError(
+                    "UTC group startup requires a wall-clock second-00 anchor"
+                )
             self._utc_start_tick_epoch = start_at_epoch
             self._next_utc_tick_epoch = start_at_epoch
+            if self.counter_mode == GROUP_MODE:
+                self._group_counter_anchor_epoch = start_at_epoch
+                total_windows = (
+                    self._startup_message_bit_length + OUTPUT_BITS - 1
+                ) // OUTPUT_BITS
+                initial_window_count = min(
+                    GROUP_WINDOW_COUNT,
+                    total_windows,
+                )
+                self._group_sender_session_id = (
+                    self._startup_sender_session_id
+                )
+                self._group_expected_group_index = 0
+                self._group_expected_attempt = 1
+                self._group_attempt_start_epochs[
+                    (
+                        self._startup_sender_session_id,
+                        0,
+                        1,
+                    )
+                ] = start_at_epoch
+                self._active_group = {
+                    "sender_session_id": self._startup_sender_session_id,
+                    "group_index": 0,
+                    "group_attempt": 1,
+                    "group_window_count": initial_window_count,
+                    "message_bit_length": self._startup_message_bit_length,
+                }
+                self._group_retry_pause_after_epoch = (
+                    start_at_epoch + GROUP_RETRY_SILENCE_SECONDS
+                )
             self._next_periodic_tick = None
             self._next_periodic_tick_epoch = None
         else:
@@ -339,7 +513,17 @@ class ReceiverHistoryExtractor:
         if start_at_epoch is not None:
             start_event["start_at_epoch"] = start_at_epoch
         self.store.append_event(start_event)
-        if self.counter_mode in UTC_COUNTER_MODES:
+        if self.counter_mode == GROUP_MODE:
+            start_at = datetime.fromtimestamp(
+                start_at_epoch + UTC_TICK_PHASE_SECONDS,
+                timezone.utc,
+            ).isoformat(timespec="milliseconds")
+            print(
+                "Startup arm and broadcast ARP observed; counter will start "
+                f"at the next UTC :00 anchor {start_at}.",
+                flush=True,
+            )
+        elif self.counter_mode in UTC_COUNTER_MODES:
             start_at = datetime.fromtimestamp(
                 start_at_epoch + UTC_TICK_PHASE_SECONDS
             ).isoformat(timespec="milliseconds")
@@ -373,8 +557,46 @@ class ReceiverHistoryExtractor:
             )
             return
         if self._start_pointer_seen:
-            return
+            if self.counter_mode != GROUP_MODE or self._group_received_data:
+                return
+            self._start_pointer_seen = False
+            self._next_utc_tick_epoch = None
+            self._group_counter_anchor_epoch = None
+            self._active_group = None
+            self._group_control_pending = None
+            self._group_counter_paused = False
+            self._group_resume_tick_epoch = None
+            self._group_retry_pause_after_epoch = None
+            self._group_expected_group_index = None
+            self._group_expected_attempt = None
+            self._group_attempt_start_epochs.clear()
+            self._group_received_data = False
+        start_at_epoch = None
+        sender_session_id = pointer_record.get("sender_session_id")
+        message_bit_length = None
+        if self.counter_mode == GROUP_MODE:
+            try:
+                start_at_epoch = int(pointer_record["start_at_epoch"])
+                message_bit_length = int(pointer_record["message_bit_length"])
+            except (KeyError, TypeError, ValueError):
+                self._note_recognition_rejection(
+                    "group startup arm has no valid shared UTC anchor or message length"
+                )
+                return
+            if (
+                not sender_session_id
+                or message_bit_length <= 0
+                or not is_utc_minute_anchor_epoch(start_at_epoch)
+                or start_at_epoch <= utc_tick_epoch()
+            ):
+                self._note_recognition_rejection(
+                    "group startup arm has invalid sender metadata or an expired UTC anchor"
+                )
+                return
         self._startup_armed = True
+        self._startup_start_at_epoch = start_at_epoch
+        self._startup_sender_session_id = sender_session_id
+        self._startup_message_bit_length = message_bit_length
         self._pending_start = None
         self._observed_arp_anchors.clear()
         self._observed_arp_anchor_perf_counters.clear()
@@ -415,6 +637,35 @@ class ReceiverHistoryExtractor:
             self._observed_arp_anchor_perf_counters.pop(
                 expired_anchor_id, None
             )
+
+        if self.counter_mode == GROUP_MODE:
+            start_at_epoch = self._startup_start_at_epoch
+            if start_at_epoch is None:
+                self._note_recognition_rejection(
+                    "group startup arm has no shared UTC anchor"
+                )
+                return True
+            if start_at_epoch <= utc_tick_epoch():
+                self._note_recognition_rejection(
+                    "group startup arm expired before the ARP anchor arrived"
+                )
+                return True
+            start_pointer = {
+                "signal_type": "arm",
+                "counter_mode": GROUP_MODE,
+                "sender_session_id": self._startup_sender_session_id,
+                "message_bit_length": self._startup_message_bit_length,
+                "start_at_epoch": start_at_epoch,
+                "anchor_id": anchor_id,
+            }
+            self._record_start_pointer(
+                start_pointer,
+                timestamp,
+                arrival_perf_counter,
+                time.perf_counter(),
+                start_at_epoch=start_at_epoch,
+            )
+            return True
 
         if self._pending_start is not None:
             (
@@ -500,21 +751,17 @@ class ReceiverHistoryExtractor:
         if (
             self._utc_start_tick_epoch is None
             or group_start_tick_epoch < self._utc_start_tick_epoch
-            or counter_for_utc_tick(
-                group_start_tick_epoch,
-                self._utc_start_tick_epoch,
-            )
-            != 0
+            or not is_utc_minute_anchor_epoch(group_start_tick_epoch)
         ):
             raise ValueError(
-                "group start is not aligned to the original UTC counter 0000"
+                "group start is not aligned to a UTC second-00 boundary"
             )
         try:
             data_tick_epoch = int(pointer_record["tick_epoch"])
         except (KeyError, TypeError, ValueError):
             raise ValueError("group pointer has no valid UTC tick") from None
         if data_tick_epoch < group_start_tick_epoch:
-            raise ValueError("group pointer predates its counter-0000 sync point")
+            raise ValueError("group pointer predates its UTC second-00 anchor")
         window_bits = pointer_record.get("window_bits")
         counter_bits = pointer_record.get("counter_bits")
         if (
@@ -526,6 +773,12 @@ class ReceiverHistoryExtractor:
             or any(bit not in "01" for bit in counter_bits)
         ):
             raise ValueError("group pointer has invalid window bits")
+        expected_counter = counter_for_utc_tick(
+            data_tick_epoch,
+            group_start_tick_epoch,
+        )
+        if counter_bits != f"{expected_counter:0{OUTPUT_BITS}b}":
+            raise ValueError("group pointer counter does not match its UTC anchor")
 
         total_windows = (
             message_bit_length + OUTPUT_BITS - 1
@@ -549,6 +802,22 @@ class ReceiverHistoryExtractor:
         candidate = counter_bits[:expected_width]
         if len(window_bits) != expected_width or candidate != window_bits:
             raise ValueError("group pointer window bits do not match its counter")
+        if (
+            self._startup_sender_session_id is not None
+            and pointer_record["sender_session_id"]
+            != self._startup_sender_session_id
+        ):
+            raise ValueError("group pointer came from a different sender session")
+        if (
+            self._startup_message_bit_length is not None
+            and message_bit_length != self._startup_message_bit_length
+        ):
+            raise ValueError("group pointer message length changed during the run")
+        if self._group_expected_group_index is not None and (
+            group_index != self._group_expected_group_index
+            or group_attempt != self._group_expected_attempt
+        ):
+            raise ValueError("group pointer does not match the expected group attempt")
         sync_key = (
             pointer_record["sender_session_id"],
             group_index,
@@ -574,12 +843,14 @@ class ReceiverHistoryExtractor:
         }
 
     def _record_group_start_marker(self, pointer_record, timestamp):
-        """Record the common run-relative counter-0000 tick before replay."""
+        """Record a group attempt's common UTC second-00 anchor."""
         try:
             sender_session_id = pointer_record["sender_session_id"]
             group_index = int(pointer_record["group_index"])
             group_attempt = int(pointer_record["group_attempt"])
             start_tick_epoch = int(pointer_record["group_start_tick_epoch"])
+            group_window_count = int(pointer_record["group_window_count"])
+            message_bit_length = int(pointer_record["message_bit_length"])
         except (KeyError, TypeError, ValueError):
             self._note_recognition_rejection(
                 "group sync marker has missing or invalid metadata"
@@ -591,14 +862,13 @@ class ReceiverHistoryExtractor:
             or group_attempt < 1
             or self._utc_start_tick_epoch is None
             or start_tick_epoch < self._utc_start_tick_epoch
-            or counter_for_utc_tick(
-                start_tick_epoch,
-                self._utc_start_tick_epoch,
-            )
-            != 0
+            or not is_utc_minute_anchor_epoch(start_tick_epoch)
+            or not 1 <= group_window_count <= GROUP_WINDOW_COUNT
+            or message_bit_length != self._startup_message_bit_length
+            or sender_session_id != self._startup_sender_session_id
         ):
             self._note_recognition_rejection(
-                "group sync marker is not aligned to the original UTC counter 0000"
+                "group sync marker has invalid metadata or misses UTC second 00"
             )
             return
 
@@ -607,16 +877,57 @@ class ReceiverHistoryExtractor:
             self._final_group_complete = False
             self._group_attempt_start_epochs.clear()
         key = (sender_session_id, group_index, group_attempt)
+        same_attempt_active = (
+            self._active_group is not None
+            and self._active_group["sender_session_id"] == sender_session_id
+            and self._active_group["group_index"] == group_index
+            and self._active_group["group_attempt"] == group_attempt
+        )
         previous_epoch = self._group_attempt_start_epochs.get(key)
         if previous_epoch is not None and previous_epoch != start_tick_epoch:
             self._note_recognition_rejection(
                 "group sync marker changed the UTC tick during an attempt"
             )
             return
+        if self._group_expected_group_index is not None and (
+            group_index != self._group_expected_group_index
+            or group_attempt != self._group_expected_attempt
+        ):
+            self._note_recognition_rejection(
+                "group sync marker does not match the receiver's expected group attempt"
+            )
+            return
+        if (
+            self._group_resume_tick_epoch is not None
+            and start_tick_epoch < self._group_resume_tick_epoch
+        ):
+            self._note_recognition_rejection(
+                "group sync marker arrived before the agreed UTC resume anchor"
+            )
+            return
+
         self._group_attempt_start_epochs[key] = start_tick_epoch
+        self._group_counter_anchor_epoch = start_tick_epoch
+        if self._group_counter_paused:
+            self._next_utc_tick_epoch = start_tick_epoch
+        self._group_counter_paused = False
+        self._group_resume_tick_epoch = None
+        self._group_control_pending = None
+        self._group_expected_group_index = group_index
+        self._group_expected_attempt = group_attempt
+        self._active_group = {
+            "sender_session_id": sender_session_id,
+            "group_index": group_index,
+            "group_attempt": group_attempt,
+            "group_window_count": group_window_count,
+            "message_bit_length": message_bit_length,
+        }
         self._last_pointer_sample_count = self.sample_count
         self._group_retry_pending = False
-        self._group_retry_pause_after_epoch = None
+        if not same_attempt_active:
+            self._group_retry_pause_after_epoch = (
+                start_tick_epoch + GROUP_RETRY_SILENCE_SECONDS
+            )
         self.store.append_event({
             "event_type": "group_attempt_sync",
             "session_id": self.session_id,
@@ -629,112 +940,7 @@ class ReceiverHistoryExtractor:
         })
         print(
             f"Group {group_index + 1} attempt {group_attempt} aligned at "
-            f"the same counter 0000 UTC tick {start_tick_epoch}.",
-            flush=True,
-        )
-
-    def _record_group_status_query(
-        self, pointer_record, timestamp, capture_epoch=None
-    ):
-        """Answer a separate status query only when every group window exists."""
-        if capture_epoch is None:
-            capture_epoch = time.time()
-        try:
-            sender_session_id = pointer_record["sender_session_id"]
-            group_index = int(pointer_record["group_index"])
-            group_attempt = int(pointer_record["group_attempt"])
-            group_window_count = int(pointer_record["group_window_count"])
-            message_bit_length = int(pointer_record["message_bit_length"])
-            retry_after_epoch = int(pointer_record["retry_after_epoch"])
-        except (KeyError, TypeError, ValueError):
-            self._note_recognition_rejection(
-                "group status query has missing or invalid metadata"
-            )
-            return
-
-        values = (
-            group_index,
-            group_attempt,
-            group_window_count,
-            message_bit_length,
-            retry_after_epoch,
-        )
-        if (
-            not sender_session_id
-            or any(value < 0 for value in values)
-            or group_attempt < 1
-            or message_bit_length <= 0
-        ):
-            self._note_recognition_rejection(
-                "group status query indexes must be non-negative"
-            )
-            return
-
-        total_windows = (
-            message_bit_length + OUTPUT_BITS - 1
-        ) // OUTPUT_BITS
-        group_start_window = group_index * GROUP_WINDOW_COUNT
-        expected_window_count = min(
-            GROUP_WINDOW_COUNT,
-            max(0, total_windows - group_start_window),
-        )
-        if (
-            not 1 <= group_window_count <= GROUP_WINDOW_COUNT
-            or group_window_count != expected_window_count
-        ):
-            self._note_recognition_rejection(
-                "group status query count does not match its message"
-            )
-            return
-
-        if (
-            self._group_sender_session_id is not None
-            and self._group_sender_session_id != sender_session_id
-        ):
-            self._note_recognition_rejection(
-                "group status query came from a different sender session"
-            )
-            return
-        self._group_sender_session_id = sender_session_id
-        self._last_pointer_sample_count = self.sample_count
-        self._group_retry_pause_after_epoch = retry_after_epoch
-
-        progress = self.secret_bits_store.group_progress(
-            sender_session_id,
-            group_index,
-            group_window_count,
-        )
-        pointer_record["timestamp"] = timestamp
-        self.store.append_event({
-            "event_type": "group_status_query",
-            "session_id": self.session_id,
-            "timestamp": timestamp,
-            "sender_session_id": sender_session_id,
-            "group_index": group_index,
-            "group_attempt": group_attempt,
-            "group_window_count": group_window_count,
-            "received_window_count": progress["received_window_count"],
-            "missing_window_indices": progress["missing_window_indices"],
-            "retry_after_epoch": retry_after_epoch,
-            "query_received_epoch": capture_epoch,
-            "status": "complete" if progress["complete"] else "incomplete",
-        })
-
-        if progress["complete"]:
-            print(
-                f"Group {group_index + 1} status query: all "
-                f"{group_window_count} windows are present; sending ACK.",
-                flush=True,
-            )
-            self._send_group_ack(pointer_record)
-            return
-
-        self._group_retry_pending = True
-        print(
-            f"Group {group_index + 1} status query: receiver has "
-            f"{progress['received_window_count']}/{group_window_count} "
-            "windows; no ACK sent. Counter will pause after the 24-second "
-            "silence interval.",
+            f"the same UTC second-00 anchor {start_tick_epoch}.",
             flush=True,
         )
 
@@ -773,33 +979,49 @@ class ReceiverHistoryExtractor:
                     history_record = None
                     empty_status = "tick_epoch_before_utc_run_start"
                 else:
-                    counter = counter_for_utc_tick(
-                        tick_epoch,
-                        self._utc_start_tick_epoch,
-                    )
-                    advertised_counter = int(advertised_bits, 2)
-                    if counter != advertised_counter:
+                    counter_anchor_epoch = self._utc_start_tick_epoch
+                    if self.counter_mode == GROUP_MODE:
+                        try:
+                            counter_anchor_epoch = int(
+                                pointer_record["group_start_tick_epoch"]
+                            )
+                        except (KeyError, TypeError, ValueError):
+                            counter_anchor_epoch = None
+                    if (
+                        counter_anchor_epoch is None
+                        or not is_utc_minute_anchor_epoch(counter_anchor_epoch)
+                        or tick_epoch < counter_anchor_epoch
+                    ):
                         history_record = None
-                        empty_status = "utc_counter_does_not_match_tick_epoch"
+                        empty_status = "invalid_group_utc_anchor"
                     else:
-                        history_record = {
-                            "session_id": self.session_id,
-                            "sample_no": tick_epoch,
-                            "protocol": "PERIODIC",
-                            "counter_mode": self.counter_mode,
-                            "timestamp": timestamp,
-                            "counter": counter,
-                            "counter_bits": f"{counter:0{OUTPUT_BITS}b}",
-                            "clock_tick_epoch": tick_epoch,
-                        }
-                        pointer_record["utc_tick_epoch"] = tick_epoch
-                        pointer_record[
-                            "utc_tick_arrival_offset_seconds"
-                        ] = round(
-                            capture_epoch
-                            - (tick_epoch + UTC_TICK_PHASE_SECONDS),
-                            3,
+                        counter = counter_for_utc_tick(
+                            tick_epoch,
+                            counter_anchor_epoch,
                         )
+                        advertised_counter = int(advertised_bits, 2)
+                        if counter != advertised_counter:
+                            history_record = None
+                            empty_status = "utc_counter_does_not_match_tick_epoch"
+                        else:
+                            history_record = {
+                                "session_id": self.session_id,
+                                "sample_no": tick_epoch,
+                                "protocol": "PERIODIC",
+                                "counter_mode": self.counter_mode,
+                                "timestamp": timestamp,
+                                "counter": counter,
+                                "counter_bits": f"{counter:0{OUTPUT_BITS}b}",
+                                "clock_tick_epoch": tick_epoch,
+                            }
+                            pointer_record["utc_tick_epoch"] = tick_epoch
+                            pointer_record[
+                                "utc_tick_arrival_offset_seconds"
+                            ] = round(
+                                capture_epoch
+                                - (tick_epoch + UTC_TICK_PHASE_SECONDS),
+                                3,
+                            )
             if history_record is None:
                 self._note_recognition_rejection(
                     f"UTC pointer sample could not be matched: {empty_status}"
@@ -823,14 +1045,31 @@ class ReceiverHistoryExtractor:
             group_metadata=group_metadata,
         )
         if group_metadata is not None:
-            if (
-                self._group_sender_session_id
-                != group_metadata["sender_session_id"]
-            ):
-                self._group_sender_session_id = group_metadata[
-                    "sender_session_id"
+            if history_record is not None:
+                self._group_received_data = True
+                if self._group_counter_paused:
+                    self._group_counter_paused = False
+                    self._next_utc_tick_epoch = max(
+                        group_metadata["group_start_tick_epoch"],
+                        utc_tick_epoch(capture_epoch or time.time()) + 1,
+                    )
+                self._group_resume_tick_epoch = None
+                self._group_control_pending = None
+                self._group_counter_anchor_epoch = group_metadata[
+                    "group_start_tick_epoch"
                 ]
-                self._final_group_complete = False
+            self._group_sender_session_id = group_metadata[
+                "sender_session_id"
+            ]
+            self._active_group = {
+                "sender_session_id": group_metadata["sender_session_id"],
+                "group_index": group_metadata["group_index"],
+                "group_attempt": group_metadata["group_attempt"],
+                "group_window_count": group_metadata["group_window_count"],
+                "message_bit_length": group_metadata["message_bit_length"],
+            }
+            self._group_expected_group_index = group_metadata["group_index"]
+            self._group_expected_attempt = group_metadata["group_attempt"]
             total_windows = (
                 group_metadata["message_bit_length"] + OUTPUT_BITS - 1
             ) // OUTPUT_BITS
@@ -843,6 +1082,13 @@ class ReceiverHistoryExtractor:
                 and group_end_window >= total_windows
             ):
                 self._final_group_complete = True
+            if history_record is not None:
+                self._group_retry_pause_after_epoch = math.ceil(
+                    (capture_epoch or time.time())
+                    + GROUP_RETRY_SILENCE_SECONDS
+                )
+                if pointer_event.get("group_complete"):
+                    self._group_retry_pause_after_epoch = None
         self.store.append_event({
             "event_type": "pointer",
             "session_id": self.session_id,
@@ -860,11 +1106,16 @@ class ReceiverHistoryExtractor:
             self.store.pop_latest()
         self._last_pointer_sample_count = self.sample_count
         self._group_retry_pending = False
-        if self.counter_mode == GROUP_MODE:
-            if capture_epoch is None:
-                capture_epoch = time.time()
-            self._group_retry_pause_after_epoch = math.ceil(
-                capture_epoch + GROUP_RETRY_SILENCE_SECONDS
+        if (
+            group_metadata is not None
+            and history_record is not None
+            and pointer_event.get("group_complete")
+        ):
+            final_group = self._final_group_complete
+            self._begin_group_control(
+                action="complete",
+                active=self._active_group,
+                final_group=final_group,
             )
         print(
             f"Pointer from "
@@ -883,65 +1134,6 @@ class ReceiverHistoryExtractor:
         self.recognition_rejections[reason] = count
         if count == 1:
             print(f"Captured packet ignored: {reason}.", flush=True)
-
-    def _send_group_ack(self, pointer_record):
-        """Multicast one group-complete pointer back to the sender."""
-        group_index = int(pointer_record["group_index"])
-        group_attempt = int(pointer_record["group_attempt"])
-        target_session_id = pointer_record["sender_session_id"]
-        event_id = (
-            f"r{self.session_id[:12]}-g{group_index + 1}-a{group_attempt}"
-        )
-        source_ip = get_if_addr(self.iface)
-        source_mac = get_if_hwaddr(self.iface)
-        fields = [
-            POINTER_TXT_SIGNATURE,
-            f"event_id={event_id}",
-            f"counter_mode={GROUP_MODE}",
-            "signal_type=group_ack",
-            f"target_session_id={target_session_id}",
-            f"group_index={group_index}",
-            f"group_attempt={group_attempt}",
-            f"group_window_count={pointer_record['group_window_count']}",
-        ]
-        answer = DNSRR(
-            rrname=f"{event_id}._hcc-pointer._udp.local.",
-            type="TXT",
-            cacheflush=1,
-            ttl=120,
-            rdata=[field.encode("ascii") for field in fields],
-        )
-        packet = (
-            Ether(src=source_mac, dst=MDNS_GROUP_MAC)
-            / IP(src=source_ip, dst=MDNS_GROUP_IP, ttl=255)
-            / UDP(sport=MDNS_PORT, dport=MDNS_PORT)
-            / DNS(id=0, qr=1, aa=1, ancount=1, an=answer)
-        )
-        try:
-            sendp(packet, iface=self.iface, count=1, verbose=False)
-            send_status = "sent"
-        except Exception as exc:
-            send_status = "failed"
-            print(f"Could not send group ACK for {event_id}: {exc}", flush=True)
-        self.store.append_event({
-            "event_type": "group_ack",
-            "session_id": self.session_id,
-            "timestamp": timestamp_now(),
-            "event_id": event_id,
-            "target_session_id": target_session_id,
-            "group_index": group_index,
-            "group_attempt": group_attempt,
-            "group_window_count": int(pointer_record["group_window_count"]),
-            "destination_ip": MDNS_GROUP_IP,
-            "destination_port": MDNS_PORT,
-            "send_status": send_status,
-            "wire_frame_hex": bytes(packet).hex(),
-        })
-        print(
-            f"Group {group_index + 1} complete; receiver group pointer "
-            f"{send_status} for attempt {group_attempt}.",
-            flush=True,
-        )
 
     def _process_packet(
         self,
@@ -1018,31 +1210,18 @@ class ReceiverHistoryExtractor:
                 )
             return
         if signal_type == "group_start":
-            if self.counter_mode != GROUP_MODE:
-                self._note_recognition_rejection(
-                    "group sync marker is only valid in UTC group mode"
-                )
-                return
-            if not self._start_pointer_seen:
-                self._note_recognition_rejection(
-                    "group sync marker arrived before the startup pointer"
-                )
-                return
-            self._record_group_start_marker(pointer_record, timestamp)
+            self._note_recognition_rejection(
+                "group start markers are not used; the receiver response carries the UTC anchor"
+            )
+            return
+        if signal_type == "group_control_ack":
+            self._note_recognition_rejection(
+                "sender control acknowledgements are not used in UTC group mode"
+            )
             return
         if signal_type == "group_status":
-            if self.counter_mode != GROUP_MODE:
-                self._note_recognition_rejection(
-                    "group status query is only valid in UTC group mode"
-                )
-                return
-            if not self._start_pointer_seen:
-                self._note_recognition_rejection(
-                    "group status query arrived before the startup pointer"
-                )
-                return
-            self._record_group_status_query(
-                pointer_record, timestamp, capture_epoch
+            self._note_recognition_rejection(
+                "sender group-status queries are no longer used; receiver controls each group"
             )
             return
         if not self._start_pointer_seen:
@@ -1058,17 +1237,32 @@ class ReceiverHistoryExtractor:
         """Proses frame antrean dan timer counter pada satu worker terurut."""
         while True:
             timeout = None
+            deadlines = []
             if (
                 self.counter_mode in UTC_COUNTER_MODES
                 and self._next_utc_tick_epoch is not None
                 and not self._stop_requested.is_set()
+                and not (
+                    self.counter_mode == GROUP_MODE
+                    and self._group_counter_paused
+                )
             ):
-                timeout = max(
-                    0.0,
+                deadlines.append(
                     self._next_utc_tick_epoch
                     + UTC_TICK_PHASE_SECONDS
-                    - time.time(),
                 )
+            if (
+                self.counter_mode == GROUP_MODE
+                and self._group_counter_paused
+                and self._group_control_pending is not None
+                and not self._group_control_pending["final_group"]
+            ):
+                deadlines.append(
+                    self._group_control_pending["resume_at_epoch"]
+                    + UTC_TICK_PHASE_SECONDS
+                )
+            if deadlines:
+                timeout = max(0.0, min(deadlines) - time.time())
             elif (
                 self._next_periodic_tick is not None
                 and not self._stop_requested.is_set()
@@ -1127,9 +1321,10 @@ class ReceiverHistoryExtractor:
         )
         if self.counter_mode == GROUP_MODE:
             print(
-                "Group replay mode: after "
+                "Group stop-and-wait mode: receiver sends one complete/replay "
+                "pointer per completion or timeout; after "
                 f"{GROUP_RETRY_TIMEOUT_SECONDS} seconds without a sender "
-                "pointer, pause counter sampling until shared counter 0000.",
+                "pointer, it sends a new replay pointer for the active group.",
                 flush=True,
             )
         else:
@@ -1158,19 +1353,20 @@ class ReceiverHistoryExtractor:
             )
         elif self.counter_mode in UTC_COUNTER_MODES:
             print(
-                "Waiting for startup mDNS arm, then an ARP anchor and matching "
-                "confirmation. UTC counter values follow each shared UTC "
-                "second; keep both system clocks synchronized.",
+                "Waiting for startup mDNS arm and a broadcast ARP anchor. "
+                "UTC counter values follow shared UTC seconds; keep both "
+                "system clocks synchronized.",
                 flush=True,
             )
             if self.counter_mode == GROUP_MODE:
                 print(
-                    "Option 4 stores each received window by its group/window "
-                    "index. A separate group-status pointer asks whether every "
-                    "window arrived; the receiver ACKs only complete groups. "
-                    f"After {GROUP_RETRY_TIMEOUT_SECONDS} silent seconds, it "
-                    "pauses counter sampling until shared counter 0000 and keeps "
-                    "the partial group for replay from window 0.",
+                    "Option 4's initial arm announces the next UTC second-00 "
+                    "anchor before ARP; no start pointer follows ARP. The sender "
+                    "pauses after each group. The receiver confirms only when "
+                    "all indexed windows are present, otherwise it requests a "
+                    f"replay after {GROUP_RETRY_TIMEOUT_SECONDS} silent seconds. "
+                    "Both sides resume at the UTC second-00 anchor carried in the "
+                    "receiver pointer.",
                     flush=True,
                 )
         else:

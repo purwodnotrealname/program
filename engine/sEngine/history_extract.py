@@ -7,7 +7,6 @@ from scapy.all import conf, get_if_list
 
 from engine.periodic_counter import (
     GROUP_MODE,
-    GROUP_RETRY_TIMEOUT_SECONDS,
     GROUP_WINDOW_COUNT,
     OUTPUT_BITS,
     PERIODIC_COUNTER_INTERVAL_SECONDS,
@@ -18,8 +17,7 @@ from engine.periodic_counter import (
     UTC_TICK_PHASE_SECONDS,
     PeriodicCounterState,
     counter_for_utc_tick,
-    counter_zero_tick_epoch_at_or_after,
-    next_counter_zero_tick_epoch,
+    is_utc_minute_anchor_epoch,
     timestamp_now,
     utc_tick_epoch,
 )
@@ -35,9 +33,9 @@ class ICDExtractor:
         on_match=None,
         on_start=None,
         on_group_start=None,
-        on_group_status=None,
-        on_group_sync=None,
+        on_group_response=None,
         counter_mode=PERIODIC_MODE,
+        on_group_response_pending=None,
     ):
         if counter_mode not in (
             PERIODIC_MODE,
@@ -55,12 +53,12 @@ class ICDExtractor:
             for callback in (
                 on_match,
                 on_group_start,
-                on_group_status,
-                on_group_sync,
+                on_group_response,
+                on_group_response_pending,
             )
         ):
             raise ValueError(
-                "UTC group mode requires pointer and status-query callbacks"
+                "UTC group mode requires pointer and response callbacks"
             )
 
         self.iface = iface
@@ -69,8 +67,8 @@ class ICDExtractor:
         self.on_match = on_match
         self.on_start = on_start
         self.on_group_start = on_group_start
-        self.on_group_status = on_group_status
-        self.on_group_sync = on_group_sync
+        self.on_group_response = on_group_response
+        self.on_group_response_pending = on_group_response_pending
         self.records = []
         self.sample_count = 0
         self.t0_wallclock = None
@@ -83,9 +81,12 @@ class ICDExtractor:
         if self.counter_mode in UTC_COUNTER_MODES and clock_tick_epoch is not None:
             if self._utc_start_tick_epoch is None:
                 raise RuntimeError("UTC start tick has not been initialized")
+            counter_anchor_epoch = self._utc_start_tick_epoch
+            if self.counter_mode == GROUP_MODE and group_info is not None:
+                counter_anchor_epoch = group_info["group_start_tick_epoch"]
             counter = counter_for_utc_tick(
                 clock_tick_epoch,
-                self._utc_start_tick_epoch,
+                counter_anchor_epoch,
             )
         else:
             counter = self._counter_state.next_value()
@@ -103,7 +104,7 @@ class ICDExtractor:
         self.sample_count += 1
 
         attempt = None
-        group_ack_received = None
+        match_result = None
         if self.matcher is not None and not self.matcher.is_complete:
             attempt = self.matcher.try_match(
                 bit_value=counter,
@@ -134,19 +135,21 @@ class ICDExtractor:
             )
             if attempt["status"] == "matched" and self.on_match is not None:
                 try:
-                    group_ack_received = self.on_match(
+                    match_result = self.on_match(
                         {**attempt, "sample": record}
                     )
                 except Exception as exc:
                     print(f"       - pointer signal failed: {exc}", flush=True)
-        return group_ack_received
+        return match_result
 
     def _start_grouped_utc(self, start_reference):
-        """Run sequential 100-bit groups, replaying until each group is ACKed."""
+        """Run sequential groups and wait for receiver-directed replay/advance."""
         if isinstance(start_reference, bool) or not isinstance(
             start_reference, int
-        ):
-            raise ValueError("UTC group mode requires the shared start tick")
+        ) or not is_utc_minute_anchor_epoch(start_reference):
+            raise ValueError(
+                "UTC group mode requires the shared next-second-00 anchor"
+            )
         if self.matcher is None:
             raise ValueError("UTC group mode requires a message matcher")
 
@@ -180,77 +183,70 @@ class ICDExtractor:
                 group_attempt,
             )
 
-            group_acked = False
-            group_sync_sent = False
+            group_index = group_start // GROUP_WINDOW_COUNT
             group_start_tick_epoch = next_tick_epoch
-            retry_after_epoch = None
+            group_response = None
             while self.matcher.pointer < group_end:
+                if self.on_group_response_pending(
+                    group_index,
+                    group_attempt,
+                ):
+                    group_response = self.on_group_response(
+                        group_index,
+                        group_attempt,
+                        group_window_count,
+                        self.matcher.bit_length,
+                    )
+                    break
                 delay = (
                     next_tick_epoch + UTC_TICK_PHASE_SECONDS - time.time()
                 )
                 if delay > 0:
                     time.sleep(delay)
 
+                # A receiver control may arrive while the sender sleeps for
+                # this tick. Honor it before sampling or advancing the matcher.
+                if self.on_group_response_pending(
+                    group_index,
+                    group_attempt,
+                ):
+                    group_response = self.on_group_response(
+                        group_index,
+                        group_attempt,
+                        group_window_count,
+                        self.matcher.bit_length,
+                    )
+                    break
+
                 now_epoch = time.time()
                 due_tick_epoch = utc_tick_epoch(now_epoch)
                 if due_tick_epoch < next_tick_epoch:
                     continue
                 if due_tick_epoch > next_tick_epoch:
-                    if self.sample_count == 0:
-                        raise RuntimeError(
-                            "Shared UTC start tick was missed; restart both "
-                            "sender and receiver."
-                        )
-                    skipped = due_tick_epoch - next_tick_epoch
                     print(
-                        f"Skipped {skipped} late UTC counter tick(s).",
+                        f"Skipped {due_tick_epoch - next_tick_epoch} late "
+                        "UTC counter tick(s).",
                         flush=True,
                     )
                     if self.matcher.pointer == group_start:
-                        next_tick_epoch = next_counter_zero_tick_epoch(
-                            start_reference, now_epoch
-                        )
-                        group_start_tick_epoch = next_tick_epoch
+                        # Keep the announced second-00 anchor. Skipping a late
+                        # sample must not silently desynchronize the receiver.
+                        next_tick_epoch = due_tick_epoch
                         continue
                     next_tick_epoch = due_tick_epoch
 
                 phase = now_epoch - int(now_epoch)
                 if phase > UTC_MAX_SAMPLE_PHASE_SECONDS:
-                    if self.sample_count == 0:
-                        raise RuntimeError(
-                            "First UTC counter tick was too late; restart "
-                            "both sender and receiver."
-                        )
                     print(
                         f"Skipped late UTC tick {next_tick_epoch}; "
                         f"sample phase was {phase:.3f}s.",
                         flush=True,
                     )
-                    if self.matcher.pointer == group_start:
-                        next_tick_epoch = next_counter_zero_tick_epoch(
-                            start_reference, now_epoch
-                        )
-                        group_start_tick_epoch = next_tick_epoch
-                    else:
-                        next_tick_epoch += 1
+                    next_tick_epoch += 1
                     continue
 
-                if not group_sync_sent:
-                    if counter_for_utc_tick(
-                        next_tick_epoch, start_reference
-                    ) != 0:
-                        raise RuntimeError(
-                            "Group replay must begin at the shared counter 0000"
-                        )
-                    self.on_group_sync(
-                        group_start // GROUP_WINDOW_COUNT,
-                        group_attempt,
-                        group_start_tick_epoch,
-                    )
-                    group_sync_sent = True
-
                 group_info = {
-                    "group_index": group_start // GROUP_WINDOW_COUNT,
+                    "group_index": group_index,
                     "group_attempt": group_attempt,
                     "group_window_index": self.matcher.pointer - group_start,
                     "group_window_count": group_window_count,
@@ -262,47 +258,93 @@ class ICDExtractor:
                     clock_tick_epoch=next_tick_epoch,
                     group_info=group_info,
                 )
-                group_pointer_matched = self.matcher.pointer == group_end
                 next_tick_epoch += 1
 
-                if group_pointer_matched:
-                    group_acked, retry_after_epoch = self.on_group_status(
-                        group_start // GROUP_WINDOW_COUNT,
+                if self.matcher.pointer == group_end:
+                    group_response = self.on_group_response(
+                        group_index,
                         group_attempt,
                         group_window_count,
                         self.matcher.bit_length,
                     )
-                    if not group_acked:
-                        print(
-                            "No complete-group ACK received. Sender stopped "
-                            f"counter processing for {GROUP_RETRY_TIMEOUT_SECONDS} "
-                            "seconds; replaying this group from window 0 at "
-                            "the next shared counter 0000.",
-                            flush=True,
-                        )
                     break
 
-            if group_acked:
+            if group_response is None:
+                continue
+            action = group_response["action"]
+            response_group_index = group_response["group_index"]
+            response_group_attempt = group_response["group_attempt"]
+            next_group_index = group_response["next_group_index"]
+            next_group_attempt = group_response["next_group_attempt"]
+            resume_at_epoch = group_response["resume_at_epoch"]
+            final_group = group_response["final_group"]
+            if action not in ("complete", "replay"):
+                raise RuntimeError(
+                    f"Unknown receiver group response: {action!r}"
+                )
+            if (
+                response_group_index < 0
+                or response_group_attempt < 1
+                or next_group_index < group_index
+                or next_group_index > total_groups
+                or next_group_attempt < 1
+            ):
+                raise RuntimeError("Receiver response has invalid group indexes")
+            if action == "complete":
+                if (
+                    next_group_index != response_group_index + 1
+                    or next_group_attempt != 1
+                ):
+                    raise RuntimeError(
+                        "Complete response does not point to the next group"
+                    )
                 print(
-                    f"Group {group_start // GROUP_WINDOW_COUNT + 1} "
-                    "confirmed by receiver.",
+                    f"Receiver confirmed group {response_group_index + 1}.",
                     flush=True,
                 )
-                group_start = group_end
-                group_attempt = 1
             else:
-                group_attempt += 1
+                if (
+                    next_group_index != response_group_index
+                    or next_group_attempt <= response_group_attempt
+                ):
+                    raise RuntimeError(
+                        "Replay response does not point to a later attempt"
+                    )
+                print(
+                    f"Receiver requested group {next_group_index + 1}, "
+                    f"attempt {next_group_attempt}.",
+                    flush=True,
+                )
 
+            if final_group:
+                if action != "complete" or next_group_index != total_groups:
+                    raise RuntimeError(
+                        "Final response does not mark the last group complete"
+                    )
+                group_start = total_windows
+                break
+            if not is_utc_minute_anchor_epoch(resume_at_epoch):
+                raise RuntimeError(
+                    "Receiver response is not anchored at UTC wall-clock :00"
+                )
+            new_group_start = next_group_index * GROUP_WINDOW_COUNT
+            if new_group_start >= total_windows:
+                raise RuntimeError(
+                    "Non-final response points beyond the final message window"
+                )
+            if new_group_start < group_start:
+                raise RuntimeError("Receiver response moves the sender backward")
+            group_start = new_group_start
+            group_attempt = next_group_attempt
             if group_start < total_windows:
-                if group_acked or retry_after_epoch is None:
-                    next_tick_epoch = next_counter_zero_tick_epoch(
-                        start_reference
+                if (
+                    isinstance(resume_at_epoch, bool)
+                    or not isinstance(resume_at_epoch, int)
+                ):
+                    raise RuntimeError(
+                        "Receiver response has no integer UTC anchor"
                     )
-                else:
-                    next_tick_epoch = counter_zero_tick_epoch_at_or_after(
-                        start_reference,
-                        retry_after_epoch,
-                    )
+                next_tick_epoch = resume_at_epoch
 
     def _start_periodic(self, start_reference):
         self.t0_wallclock = timestamp_now()

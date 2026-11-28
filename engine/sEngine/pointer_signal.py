@@ -1,9 +1,8 @@
 import json
-import math
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scapy.all import conf, get_if_addr, get_if_hwaddr, sendp
@@ -14,9 +13,7 @@ from scapy.sendrecv import AsyncSniffer, sniff
 
 from engine.arp_anchor import ARP_ANCHOR_FILTER, get_arp_anchor
 from engine.periodic_counter import (
-    GROUP_ACK_TIMEOUT_SECONDS,
     GROUP_MODE,
-    GROUP_RETRY_SILENCE_SECONDS,
     PERIODIC_MODE,
     SYNCED_CLOCK_MODE,
     UTC_COUNTER_MODES,
@@ -24,7 +21,8 @@ from engine.periodic_counter import (
     UTC_POINTER_SEND_MIN_PHASE_SECONDS,
     UTC_START_LEAD_TICKS,
     UTC_TICK_PHASE_SECONDS,
-    next_minute_epoch,
+    is_utc_minute_anchor_epoch,
+    next_utc_minute_anchor_epoch,
     utc_tick_epoch,
 )
 
@@ -64,10 +62,11 @@ class PointerSignalSender:
         self.source_ip = get_if_addr(self.iface)
         self.source_mac = get_if_hwaddr(self.iface)
         self.output_file = Path(output_file)
-        self._group_ack_events = {}
-        self._group_ack_lock = threading.Lock()
-        self._group_ack_sniffer = None
-        self._active_group_ack_key = None
+        self._group_response_events = {}
+        self._group_responses = {}
+        self._group_response_lock = threading.Lock()
+        self._group_response_sniffer = None
+        self._active_group_response_key = None
 
         if self.source_ip == "0.0.0.0":
             raise RuntimeError(
@@ -161,8 +160,8 @@ class PointerSignalSender:
 
         self._append_record(record)
 
-    def _observe_group_ack(self, packet):
-        """Wake the sender only for a group ACK addressed to this run."""
+    def _observe_group_response(self, packet):
+        """Queue a receiver control pointer for the active sender group."""
         if not (
             packet.haslayer(IP)
             and packet.haslayer(UDP)
@@ -205,7 +204,8 @@ class PointerSignalSender:
                 if (
                     SIGNAL_SIGNATURE in values
                     and metadata.get("counter_mode") == GROUP_MODE
-                    and metadata.get("signal_type") == "group_ack"
+                    and metadata.get("signal_type")
+                    in ("group_complete", "group_replay")
                     and metadata.get("target_session_id") == self.session_id
                 ):
                     try:
@@ -213,183 +213,149 @@ class PointerSignalSender:
                             int(metadata["group_index"]),
                             int(metadata["group_attempt"]),
                         )
+                        resume_at_epoch = int(metadata["resume_at_epoch"])
+                        next_group_index = int(metadata["next_group_index"])
+                        next_group_attempt = int(
+                            metadata["next_group_attempt"]
+                        )
                     except (KeyError, ValueError):
                         return
-                    with self._group_ack_lock:
-                        ack_event = self._group_ack_events.get(key)
-                    if ack_event is not None:
-                        ack_event.set()
+                    final_group = metadata.get("final_group") == "1"
+                    if (
+                        key[0] < 0
+                        or key[1] < 1
+                        or next_group_index < 0
+                        or next_group_attempt < 1
+                        or (
+                            not final_group
+                            and not is_utc_minute_anchor_epoch(
+                                resume_at_epoch
+                            )
+                        )
+                    ):
+                        return
+                    response = {
+                        "action": metadata["signal_type"].replace(
+                            "group_", ""
+                        ),
+                        "resume_at_epoch": resume_at_epoch,
+                        "receiver_session_id": metadata.get(
+                            "receiver_session_id"
+                        ),
+                        "group_index": key[0],
+                        "group_attempt": key[1],
+                        "next_group_index": next_group_index,
+                        "next_group_attempt": next_group_attempt,
+                        "final_group": final_group,
+                    }
+                    with self._group_response_lock:
+                        active_key = self._active_group_response_key
+                        response_event = self._group_response_events.get(
+                            active_key
+                        )
+                        next_key = (next_group_index, next_group_attempt)
+                        if (
+                            response_event is not None
+                            and active_key is not None
+                            and next_key > active_key
+                        ):
+                            self._group_responses[active_key] = response
+                            response_event.set()
                 return
             answer = answer.payload
 
-    def _start_group_ack_listener(self):
-        if self.counter_mode != GROUP_MODE or self._group_ack_sniffer is not None:
+    def _start_group_response_listener(self):
+        if (
+            self.counter_mode != GROUP_MODE
+            or self._group_response_sniffer is not None
+        ):
             return
         started = threading.Event()
-        self._group_ack_sniffer = AsyncSniffer(
+        self._group_response_sniffer = AsyncSniffer(
             iface=self.iface,
             filter=f"udp and dst host {MDNS_GROUP_IP} and dst port {MDNS_PORT}",
-            prn=self._observe_group_ack,
+            prn=self._observe_group_response,
             store=False,
             started_callback=started.set,
         )
-        self._group_ack_sniffer.start()
+        self._group_response_sniffer.start()
         if not started.wait(timeout=5):
-            self._group_ack_sniffer.stop()
-            self._group_ack_sniffer = None
-            raise RuntimeError("Sender group-ACK listener did not start in 5 seconds")
+            self._group_response_sniffer.stop()
+            self._group_response_sniffer = None
+            raise RuntimeError(
+                "Sender group-response listener did not start in 5 seconds"
+            )
 
     def start_group_attempt(self, group_index, group_attempt):
-        """Register an ACK event before a group or replay begins."""
+        """Register the active attempt before a group or replay begins."""
         if self.counter_mode != GROUP_MODE:
             return
         key = (group_index, group_attempt)
-        with self._group_ack_lock:
-            if self._active_group_ack_key is not None:
-                self._group_ack_events.pop(self._active_group_ack_key, None)
-            self._group_ack_events[key] = threading.Event()
-            self._active_group_ack_key = key
+        with self._group_response_lock:
+            previous_key = self._active_group_response_key
+            if previous_key is not None and previous_key != key:
+                self._group_response_events.pop(previous_key, None)
+                self._group_responses.pop(previous_key, None)
+            self._group_response_events[key] = threading.Event()
+            self._group_responses.pop(key, None)
+            self._active_group_response_key = key
 
-    def group_ack_received(self, group_index, group_attempt):
-        """Report whether the receiver has completed this active group."""
-        with self._group_ack_lock:
-            ack_event = self._group_ack_events.get(
+    def group_response_received(self, group_index, group_attempt):
+        """Report whether a receiver response arrived for this attempt."""
+        with self._group_response_lock:
+            response_event = self._group_response_events.get(
                 (group_index, group_attempt)
             )
-        return ack_event.is_set() if ack_event is not None else False
+        return (
+            response_event.is_set()
+            if response_event is not None
+            else False
+        )
 
-    def send_group_status(
+    def wait_for_group_response(
         self,
         group_index,
         group_attempt,
         group_window_count,
         message_bit_length,
     ):
-        """Ask the receiver separately whether the current group is complete."""
+        """Wait for the receiver's one-time completion or replay pointer."""
         if self.counter_mode != GROUP_MODE:
-            return False, None
+            return None
 
         group_key = (group_index, group_attempt)
-        with self._group_ack_lock:
-            ack_event = self._group_ack_events.get(group_key)
-            if ack_event is None:
-                ack_event = threading.Event()
-                self._group_ack_events[group_key] = ack_event
-                self._active_group_ack_key = group_key
-
-        retry_after_epoch = math.ceil(
-            time.time() + GROUP_RETRY_SILENCE_SECONDS
+        with self._group_response_lock:
+            response_event = self._group_response_events.get(group_key)
+            if response_event is None:
+                response_event = threading.Event()
+                self._group_response_events[group_key] = response_event
+                self._active_group_response_key = group_key
+        print(
+            f"Group {group_index + 1} sent ({group_window_count} windows); "
+            "sender counter is paused until the receiver replies.",
+            flush=True,
         )
-        event_id = (
-            f"s{self.session_id}-g{group_index + 1}-a{group_attempt}-status"
-        )
-        fields = [
-            SIGNAL_SIGNATURE,
-            f"event_id={event_id}",
-            f"counter_mode={self.counter_mode}",
-            "signal_type=group_status",
-            f"sender_session_id={self.session_id}",
-            f"group_index={group_index}",
-            f"group_attempt={group_attempt}",
-            f"group_window_count={group_window_count}",
-            f"message_bit_length={message_bit_length}",
-            f"retry_after_epoch={retry_after_epoch}",
-        ]
-        packet = self._build_mdns_packet(event_id, fields)
-        record = {
-            "event_id": event_id,
-            "session_id": self.session_id,
-            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
-            "interface": self.iface,
-            "source_ip": self.source_ip,
-            "source_mac": self.source_mac,
-            "destination_ip": MDNS_GROUP_IP,
-            "destination_port": MDNS_PORT,
-            "counter_mode": self.counter_mode,
-            "signal_type": "group_status",
-            "group_index": group_index,
-            "group_attempt": group_attempt,
-            "group_window_count": group_window_count,
-            "retry_after_epoch": retry_after_epoch,
-            "wire_frame_hex": bytes(packet).hex(),
-        }
+        while not response_event.wait(0.5):
+            pass
 
-        try:
-            sendp(packet, iface=self.iface, count=1, verbose=False)
-            record["send_status"] = "sent"
-            wait_started = time.monotonic()
-            received = ack_event.wait(GROUP_ACK_TIMEOUT_SECONDS)
-            record["group_ack_status"] = "received" if received else "timeout"
-            record["group_ack_wait_seconds"] = round(
-                time.monotonic() - wait_started, 3
-            )
-        except Exception as exc:
-            record["send_status"] = "failed"
-            record["send_error"] = str(exc)
-            record["group_ack_status"] = "not_waited_send_failed"
-            self._append_record(record)
-            raise
-        finally:
-            with self._group_ack_lock:
-                self._group_ack_events.pop(group_key, None)
-                if self._active_group_ack_key == group_key:
-                    self._active_group_ack_key = None
-
-        self._append_record(record)
-        if received:
+        with self._group_response_lock:
+            response = self._group_responses.get(group_key)
+        if response is None:
+            raise RuntimeError("Receiver control pointer had no parsed response")
+        if response["action"] == "complete":
             print(
-                f"Receiver confirmed group {group_index + 1} complete.",
+                "Receiver confirmed group "
+                f"{response['group_index'] + 1} complete.",
                 flush=True,
             )
         else:
             print(
-                f"No complete-group ACK for group {group_index + 1}; "
-                f"counter processing pauses until UTC tick {retry_after_epoch}.",
+                f"Receiver requested group "
+                f"{response['next_group_index'] + 1}, attempt "
+                f"{response['next_group_attempt']}.",
                 flush=True,
             )
-        return received, retry_after_epoch
-
-    def send_group_sync(self, group_index, group_attempt, start_tick_epoch):
-        """Announce the shared counter-0000 epoch before a group attempt."""
-        if self.counter_mode != GROUP_MODE:
-            return
-        event_id = (
-            f"s{self.session_id}-g{group_index + 1}-a{group_attempt}-sync"
-        )
-        fields = [
-            SIGNAL_SIGNATURE,
-            f"event_id={event_id}",
-            f"counter_mode={self.counter_mode}",
-            "signal_type=group_start",
-            f"sender_session_id={self.session_id}",
-            f"group_index={group_index}",
-            f"group_attempt={group_attempt}",
-            f"group_start_tick_epoch={start_tick_epoch}",
-        ]
-        packet = self._build_mdns_packet(event_id, fields)
-        record = {
-            "event_id": event_id,
-            "session_id": self.session_id,
-            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
-            "interface": self.iface,
-            "source_ip": self.source_ip,
-            "source_mac": self.source_mac,
-            "destination_ip": MDNS_GROUP_IP,
-            "destination_port": MDNS_PORT,
-            "counter_mode": self.counter_mode,
-            "signal_type": "group_start",
-            "group_index": group_index,
-            "group_attempt": group_attempt,
-            "group_start_tick_epoch": start_tick_epoch,
-            "wire_frame_hex": bytes(packet).hex(),
-            "send_status": "sent",
-        }
-        self._send_packet(packet, record)
-        print(
-            f"Group {group_index + 1} attempt {group_attempt} synchronized "
-            f"at shared counter 0000 (UTC tick {start_tick_epoch}).",
-            flush=True,
-        )
+        return response
 
     def send_for_match(self, attempt):
         if self.counter_mode in UTC_COUNTER_MODES:
@@ -450,7 +416,7 @@ class PointerSignalSender:
         return None
 
     def send_start_signal(self):
-        self._start_group_ack_listener()
+        self._start_group_response_listener()
         if self.counter_mode == SYNCED_CLOCK_MODE:
             print(
                 "Synchronized clock mode: sniffing for a broadcast ARP "
@@ -458,6 +424,13 @@ class PointerSignalSender:
                 flush=True,
             )
         else:
+            if self.counter_mode == GROUP_MODE:
+                print(
+                    "Sending startup mDNS arm with the next UTC :00 anchor, "
+                    "then waiting for broadcast ARP...",
+                    flush=True,
+                )
+                return self._send_group_startup_arm_and_wait_arp()
             print(
                 "Sending startup mDNS arm before waiting for a broadcast "
                 "ARP anchor...",
@@ -581,12 +554,91 @@ class PointerSignalSender:
         print(f"Startup pointer sent for {event_id}")
         return anchor_perf_counter
 
+    def _send_group_startup_arm_and_wait_arp(self):
+        """Announce the shared UTC start epoch before both sides observe ARP."""
+        while True:
+            start_at_epoch = next_utc_minute_anchor_epoch(time.time())
+            arm_event_id = f"s{self.session_id}-group-arm-{start_at_epoch}"
+            fields = [
+                SIGNAL_SIGNATURE,
+                f"event_id={arm_event_id}",
+                f"counter_mode={GROUP_MODE}",
+                "signal_type=arm",
+                f"sender_session_id={self.session_id}",
+                f"message_bit_length={len(self.message_bits)}",
+                f"start_at_epoch={start_at_epoch}",
+            ]
+            packet = self._build_mdns_packet(arm_event_id, fields)
+            record = {
+                "event_id": arm_event_id,
+                "session_id": self.session_id,
+                "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+                "interface": self.iface,
+                "source_ip": self.source_ip,
+                "source_mac": self.source_mac,
+                "destination_ip": MDNS_GROUP_IP,
+                "destination_port": MDNS_PORT,
+                "counter_mode": GROUP_MODE,
+                "signal_type": "arm",
+                "message_bit_length": len(self.message_bits),
+                "start_at_epoch": start_at_epoch,
+                "wire_frame_hex": bytes(packet).hex(),
+                "send_status": "sent",
+            }
+            self._send_packet(packet, record)
+            print(
+                f"Startup arm sent; both sides will use the next UTC :00 anchor "
+                f"{start_at_epoch}. Waiting for broadcast ARP...",
+                flush=True,
+            )
+
+            anchor_observed_at = []
+
+            def record_anchor_observation(_packet):
+                if not anchor_observed_at:
+                    anchor_observed_at.append((time.perf_counter(), time.time()))
+
+            anchor_packets = sniff(
+                iface=self.iface,
+                filter=ARP_ANCHOR_FILTER,
+                count=1,
+                store=True,
+                prn=record_anchor_observation,
+            )
+            if not anchor_packets or not anchor_observed_at:
+                raise RuntimeError("No broadcast ARP anchor was captured.")
+            anchor = get_arp_anchor(anchor_packets[0])
+            if anchor is None:
+                raise RuntimeError("Captured ARP frame is not a valid broadcast anchor.")
+
+            _anchor_perf_counter, anchor_wallclock = anchor_observed_at[0]
+            if start_at_epoch <= utc_tick_epoch(anchor_wallclock):
+                print(
+                    "The shared UTC start epoch passed before ARP arrived; "
+                    "sending a fresh startup arm and waiting for another ARP.",
+                    flush=True,
+                )
+                continue
+
+            anchor_utc = datetime.fromtimestamp(
+                start_at_epoch, timezone.utc
+            ).isoformat(timespec="seconds")
+            print(
+                f"ARP anchor observed ({anchor['src_ip']} -> "
+                f"{anchor['target_ip']}, id={anchor['anchor_id']}). "
+                f"Waiting for UTC :00 anchor {anchor_utc}; no post-ARP "
+                "start pointer is sent.",
+                flush=True,
+            )
+            return start_at_epoch
+
     def close(self):
-        if self._group_ack_sniffer is not None:
-            if self._group_ack_sniffer.running:
-                self._group_ack_sniffer.stop()
-            self._group_ack_sniffer.join()
-            self._group_ack_sniffer = None
-        with self._group_ack_lock:
-            self._group_ack_events.clear()
-            self._active_group_ack_key = None
+        if self._group_response_sniffer is not None:
+            if self._group_response_sniffer.running:
+                self._group_response_sniffer.stop()
+            self._group_response_sniffer.join()
+            self._group_response_sniffer = None
+        with self._group_response_lock:
+            self._group_response_events.clear()
+            self._group_responses.clear()
+            self._active_group_response_key = None

@@ -93,6 +93,7 @@ class PointerRecognizer:
                 "anchor_id",
                 "start_at_epoch",
                 "sender_session_id",
+                "receiver_session_id",
                 "target_session_id",
                 "group_index",
                 "group_attempt",
@@ -101,6 +102,11 @@ class PointerRecognizer:
                 "group_end",
                 "group_start_tick_epoch",
                 "retry_after_epoch",
+                "resume_at_epoch",
+                "next_group_index",
+                "next_group_attempt",
+                "final_group",
+                "control_type",
                 "window_index",
                 "window_bits",
                 "compared_bits",
@@ -143,6 +149,9 @@ class PointerRecognizer:
                 sender_session_id = cls._field_value(
                     fields, "sender_session_id"
                 )
+                receiver_session_id = cls._field_value(
+                    fields, "receiver_session_id"
+                )
                 target_session_id = cls._field_value(
                     fields, "target_session_id"
                 )
@@ -161,6 +170,17 @@ class PointerRecognizer:
                 retry_after_epoch = cls._field_value(
                     fields, "retry_after_epoch"
                 )
+                resume_at_epoch = cls._field_value(
+                    fields, "resume_at_epoch"
+                )
+                next_group_index = cls._field_value(
+                    fields, "next_group_index"
+                )
+                next_group_attempt = cls._field_value(
+                    fields, "next_group_attempt"
+                )
+                final_group = cls._field_value(fields, "final_group")
+                control_type = cls._field_value(fields, "control_type")
                 window_index = cls._field_value(fields, "window_index")
                 window_bits = cls._field_value(fields, "window_bits")
                 compared_bits = cls._field_value(fields, "compared_bits")
@@ -183,6 +203,7 @@ class PointerRecognizer:
                     metadata["tick_epoch"] = tick_epoch
                 for key, value in (
                     ("sender_session_id", sender_session_id),
+                    ("receiver_session_id", receiver_session_id),
                     ("target_session_id", target_session_id),
                     ("group_index", group_index),
                     ("group_attempt", group_attempt),
@@ -191,6 +212,11 @@ class PointerRecognizer:
                     ("group_end", group_end),
                     ("group_start_tick_epoch", group_start_tick_epoch),
                     ("retry_after_epoch", retry_after_epoch),
+                    ("resume_at_epoch", resume_at_epoch),
+                    ("next_group_index", next_group_index),
+                    ("next_group_attempt", next_group_attempt),
+                    ("final_group", final_group),
+                    ("control_type", control_type),
                     ("window_index", window_index),
                     ("window_bits", window_bits),
                     ("compared_bits", compared_bits),
